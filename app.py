@@ -303,7 +303,7 @@ def handle_support_command(ack, respond, command):
             respond("No helpers registered yet.")
             return
         lines = [
-            f"• <@{uid}> — {info.get('role', 'Helper')}{' (admin)' if info.get('admin') else ''}"
+            f"• <@{uid}> — {info.get('role', f'{EVENT_NAME} Support')}{' (admin)' if info.get('admin') else ''}"
             for uid, info in roster.items()
         ]
         respond("\n".join(lines))
@@ -323,7 +323,7 @@ def handle_support_command(ack, respond, command):
         target_id = match.group(1)
 
         if subcommand == "promote":
-            role = parts[2].strip() if len(parts) > 2 else "Helper"
+            role = parts[2].strip() if len(parts) > 2 else f"{EVENT_NAME} Support"
             helpers.add_helper(target_id, role)
             respond(f"<@{target_id}> is now a helper: *{role}*.")
         else:

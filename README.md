@@ -62,7 +62,7 @@ Then set up `helpers.json` (git-ignore this per event, it's real roster data):
 
 ```json
 {
-  "U078VN0UU2K": { "role": "Bento Sponsor", "admin": true }
+  "U078VN0UU2K": { "role": "Bento Support", "admin": true }
 }
 ```
 
@@ -103,7 +103,8 @@ state the bot keeps.
 - `/support whoami` — anyone: see your own role, if you have one.
 - `/support list` — helpers only: list the current roster.
 - `/support promote @user <role>` — admins only: add someone to
-  `helpers.json`, or update their role if they're already in it.
+  `helpers.json`, or update their role if they're already in it. `<role>` is
+  optional — defaults to `{EVENT_NAME} Support`.
 - `/support demote @user` — admins only: remove someone from the roster.
 - `/announce <message>` — helpers only: DMs every user who's ever opened a
   ticket, signed with the sending helper's name (same signature style as a
