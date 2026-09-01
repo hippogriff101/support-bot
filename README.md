@@ -21,8 +21,6 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
 - `chat:write` — post messages
 - `im:history` — read DM messages
 - `im:read` — see DM channel info
-- `im:write` — open a DM to a user for `/announce` (posting to a user ID
-  who hasn't DMed the bot before needs this)
 - `groups:history` — read messages in the (private) support channel
 - `reactions:write` — add ✅ / 👀 / ❌ reactions
 - `users:read` — look up real names for signatures
@@ -35,14 +33,20 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
 - `message.im`
 - `message.groups` (or `message.channels` if the support channel is public)
 
-### Interactivity
+### Interactivity & Shortcuts
 - **Interactivity & Shortcuts** → toggle on. (No Request URL needed — Socket
   Mode handles this.)
+- Under **Shortcuts** → **Create New Shortcut** → **On messages**, add two:
+  - **Edit reply** — callback ID `edit_reply`
+  - **Delete reply** — callback ID `delete_reply`
+
+  These appear on the "..." menu of a message in Slack. They only do
+  anything on a helper's own `?`-reply message in the support channel (see
+  [Message shortcuts](#message-shortcuts) below).
 
 ### Slash Commands (Slash Commands → Create New Command)
-No Request URL needed — Socket Mode handles these too.
+No Request URL needed — Socket Mode handles this too.
 - `/support` — usage hint: `promote @user <role> | demote @user | list | whoami`
-- `/announce` — usage hint: `<message>`
 
 ### Install
 - **Install App to Workspace**. Copy the **Bot User OAuth Token**
@@ -121,10 +125,22 @@ shipping a `.env` file.
   `helpers.json`, or update their role if they're already in it. `<role>` is
   optional — defaults to `{EVENT_NAME} Support`.
 - `/support demote @user` — admins only: remove someone from the roster.
-- `/announce <message>` — helpers only: DMs every user who's ever opened a
-  ticket, signed with the sending helper's name (same signature style as a
-  ticket reply). Good for "we're back from lunch" / "submissions close in
-  30 min" type broadcasts.
+
+### Message shortcuts
+
+Available from the "..." menu on any message in the support channel, but
+only act on a tracked `?`-reply message (see [Configure](#interactivity--shortcuts)
+for setting these up in the Slack app config):
+
+- **Edit reply** — opens a modal with the reply text; saving updates the
+  copy already sent to the user in their DM and adds a ✏️ reaction to the
+  support-channel message. Usable by the original sender or an admin.
+- **Delete reply** — deletes the message from the user's DM and swaps the
+  support-channel message's ✅ for a ❌. Usable by the original sender or an
+  admin.
+
+Both no-op with an ephemeral notice if the message isn't a tracked reply, was
+already deleted, or the caller isn't the sender/an admin.
 
 ## Notes / things you may want to adjust
 

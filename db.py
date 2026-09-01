@@ -88,13 +88,6 @@ def get_ticket_by_support_ts(support_ts: str, path: str = DB_PATH):
         return cur.fetchone()
 
 
-def get_all_user_ids(path: str = DB_PATH) -> list[str]:
-    """Distinct user_ids of everyone who's ever opened a ticket, for /announce."""
-    with closing(sqlite3.connect(path)) as conn:
-        cur = conn.execute("SELECT DISTINCT user_id FROM tickets")
-        return [row[0] for row in cur.fetchall()]
-
-
 def create_reply(
     support_reply_ts: str,
     ticket_id: int,

@@ -336,39 +336,6 @@ def handle_support_command(ack, respond, command):
     respond(usage)
 
 
-@app.command("/announce")
-def handle_announce_command(ack, respond, client, command):
-    ack()
-    caller_id = command["user_id"]
-    if not helpers.is_helper(caller_id):
-        respond("Only helpers can send announcements.")
-        return
-
-    message = command.get("text", "").strip()
-    if not message:
-        respond("Usage: `/announce <message>` — DMs everyone who's opened a support ticket.")
-        return
-
-    user_ids = db.get_all_user_ids()
-    if not user_ids:
-        respond("No one to announce to yet — no tickets on record.")
-        return
-
-    sender_name = real_name(caller_id)
-    sent = 0
-    for user_id in user_ids:
-        try:
-            client.chat_postMessage(
-                channel=user_id,
-                text=f"{message}\n\n_— {sender_name}, {EVENT_NAME} Support_",
-            )
-            sent += 1
-        except Exception:
-            logging.exception("Failed to DM %s with announcement", user_id)
-
-    respond(f"Announcement sent to {sent}/{len(user_ids)} people.")
-
-
 if __name__ == "__main__":
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     print("Support bot running (Socket Mode)...")
