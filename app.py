@@ -21,6 +21,7 @@ MENTION_RE = re.compile(r"^<@([A-Z0-9]+)(?:\|[^>]+)?>$")
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 db.init_db()
+macros.bootstrap_defaults()
 
 if os.environ.get("INITIAL_ADMIN_ID"):
     helpers.bootstrap_admin(

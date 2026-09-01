@@ -19,6 +19,15 @@ import os
 
 MACROS_PATH = os.environ.get("MACROS_FILE", "macros.json")
 
+# Generic starter macros, duplicated from the committed macros.json rather
+# than read from it, since MACROS_PATH may point at a persistent volume that
+# shadows the repo's copy with an empty file — see bootstrap_defaults().
+DEFAULT_MACROS = {
+    "review": "Hi! Thanks for messaging us! We have seen your project and it is awaiting review - if it has been longer than 7 days then please send another message and we will get right on it!",
+    "delay": "Sorry for the wait! We're a bit backed up right now but we'll get to your message as soon as we can.",
+    "thanks": "Thanks so much for your patience — glad we could help! Let us know if anything else comes up.",
+}
+
 
 def _load() -> dict:
     if not os.path.exists(MACROS_PATH):
@@ -49,3 +58,12 @@ def add_macro(name: str, text: str) -> None:
     data = _load()
     data[name.strip().lower()] = text
     _save(data)
+
+
+def bootstrap_defaults(defaults: dict = DEFAULT_MACROS) -> None:
+    """Seed the given defaults into the macros file if it's currently empty
+    — a no-op once anything has been saved to it. Needed on hosts where
+    macros.json is a persistent volume: a fresh empty volume shadows the
+    defaults committed in the repo, so this puts them back on first boot."""
+    if not _load():
+        _save(defaults)

@@ -119,7 +119,11 @@ re-seeds just the one initial admin. `macros.json` is a bit different since
 it ships committed with defaults: without a persistent volume, any macros
 you add/update later via `/support macros` are lost on redeploy and it
 resets back to whatever's committed in the repo — usually fine, but worth
-knowing. Set the env vars from `.env.example` (plus `DB_PATH` /
+knowing. If you do give it a persistent volume too (so added macros survive
+redeploys), a fresh empty volume would otherwise shadow the defaults baked
+into the image — `bootstrap_defaults()` reseeds `review`/`delay`/`thanks`
+into it on first boot if it's empty, same idea as `INITIAL_ADMIN_ID` for
+`helpers.json`. Set the env vars from `.env.example` (plus `DB_PATH` /
 `HELPERS_FILE` / `MACROS_FILE` if you don't want the default file locations,
 e.g. to point them at a mounted volume) directly in the platform's env var
 config instead of shipping a `.env` file.
