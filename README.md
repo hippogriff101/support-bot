@@ -8,6 +8,9 @@ A generic, reusable support-ticket bot — everything event-specific
 (support channel, roster, event name) is config, not code, so the same
 bot works for any Slack-run event.
 
+> [!WARNING]
+> This app has been made by Claude Code with assistance by me (freddie) for the YSWS Bento!
+
 ## 1. Create the Slack app
 
 Go to https://api.slack.com/apps → **Create New App** → From scratch.
