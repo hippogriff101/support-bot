@@ -88,9 +88,15 @@ def handle_message(event, client, logger):
         )
         return
 
-    # --- Case 2: any message in the support channel -> gate on helper status, maybe relay ---
+    # --- Case 2: a "?" reply in a ticket thread -> gate on helper status, maybe relay ---
     if channel == SUPPORT_CHANNEL_ID:
         user_id = event["user"]
+
+        if not event.get("thread_ts"):
+            return  # channel chatter outside a thread — nothing to relay, no gate
+
+        if not text.startswith("?"):
+            return  # internal chatter in a thread, not meant for the user
 
         if not helpers.is_helper(user_id):
             client.reactions_add(channel=channel, timestamp=ts, name="x")
@@ -100,12 +106,6 @@ def handle_message(event, client, logger):
                 text="You don't have permission to post here — ping an admin if you think that's wrong.",
             )
             return
-
-        if not event.get("thread_ts"):
-            return  # helper chatting outside a ticket thread — nothing to relay
-
-        if not text.startswith("?"):
-            return  # internal chatter between helpers, not meant for the user
 
         ticket = db.get_ticket_by_support_ts(event["thread_ts"])
         if ticket is None:

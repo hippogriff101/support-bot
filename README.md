@@ -109,16 +109,15 @@ shipping a `.env` file.
   to support.
 - "Yes, send it" → original DM message gets a ✅, message is posted to the
   support channel as `*Name* (@user) > message`.
-- Anyone who posts in the support channel who **isn't in `helpers.json`**
-  gets a ❌ reaction and an ephemeral "you don't have permission" notice
-  (visible only to them) — nothing is relayed or logged.
-- A helper replies **in a ticket thread** in the support channel:
-  - starting with `?` → relayed back to the user in their DM thread, signed
-    `— Helper's first name, {EVENT_NAME} Support`. Helper's message gets a ✅.
-  - anything else → ignored (treated as internal helper chatter, not
-    intended for the user).
-- A helper posting outside a ticket thread (e.g. general channel chatter) is
-  just left alone — the permission gate above is the only check that applies.
+- A message in the support channel that isn't a `?`-prefixed reply inside a
+  thread (general channel chatter, or non-`?` chatter inside a thread) is
+  just left alone — no permission check, nothing relayed or logged.
+- Someone who posts a `?`-prefixed message **inside a thread** and **isn't in
+  `helpers.json`** gets a ❌ reaction and an ephemeral "you don't have
+  permission" notice (visible only to them) — nothing is relayed.
+- A helper posts a `?`-prefixed reply **in a ticket thread** → relayed back
+  to the user in their DM thread, signed
+  `— Helper's first name, {EVENT_NAME} Support`. Helper's message gets a ✅.
 
 ### Commands
 
