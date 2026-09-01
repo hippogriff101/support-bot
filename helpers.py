@@ -61,3 +61,13 @@ def remove_helper(user_id: str) -> bool:
 
 def all_helpers() -> dict:
     return _load()
+
+
+def bootstrap_admin(user_id: str, role: str) -> None:
+    """Seed the very first admin from an env var instead of a hand-edited
+    file. Only acts if the roster is currently empty, so it's a no-op (and
+    safe to leave configured) once `/support promote` has taken over —
+    useful on hosts where there's no way to place `helpers.json` before the
+    first run."""
+    if not _load():
+        add_helper(user_id, role, admin=True)

@@ -21,6 +21,12 @@ MENTION_RE = re.compile(r"^<@([A-Z0-9]+)(?:\|[^>]+)?>$")
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 db.init_db()
 
+if os.environ.get("INITIAL_ADMIN_ID"):
+    helpers.bootstrap_admin(
+        os.environ["INITIAL_ADMIN_ID"],
+        os.environ.get("INITIAL_ADMIN_ROLE", f"{EVENT_NAME} Support"),
+    )
+
 _name_cache: dict[str, str] = {}
 
 

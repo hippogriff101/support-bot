@@ -81,6 +81,14 @@ At least one entry needs `"admin": true` — that's who can run `/support
 promote` / `/support demote` to grow the roster from there. Get a user's ID
 via their Slack profile → **More** → **Copy member ID**.
 
+If you're running somewhere without filesystem access to hand-place that
+file (e.g. a platform like Orchard where you can't just create a file before
+the first deploy), set `INITIAL_ADMIN_ID` (and optionally
+`INITIAL_ADMIN_ROLE`) in the env instead — the bot seeds that one admin into
+`helpers.json` on startup **if the roster is currently empty**, and does
+nothing once it isn't. From there, use `/support promote` in Slack to add
+everyone else, so the JSON file is never touched by hand again.
+
 ## 3. Run
 
 ```bash
@@ -98,10 +106,13 @@ This is a long-running process (Socket Mode keeps a persistent connection —
 no public URL or webhook needed), so any host that runs a persistent Python
 process works: a small VM, a container platform, etc. The only thing that
 needs to survive restarts/redeploys is `tickets.db`, so give it a persistent
-volume/disk rather than ephemeral container storage, and set the env vars
-from `.env.example` (plus `HELPERS_FILE` if you don't want `helpers.json` in
-the default location) directly in the platform's env var config instead of
-shipping a `.env` file.
+volume/disk rather than ephemeral container storage — `helpers.json` needs
+the same persistence (see `INITIAL_ADMIN_ID` above for bootstrapping it
+without file access), or every redeploy wipes the roster back to empty and
+re-seeds just the one initial admin. Set the env vars from `.env.example`
+(plus `HELPERS_FILE` if you don't want `helpers.json` in the default
+location) directly in the platform's env var config instead of shipping a
+`.env` file.
 
 ## How it behaves
 
