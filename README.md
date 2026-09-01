@@ -134,6 +134,11 @@ config instead of shipping a `.env` file.
   to support.
 - "Yes, send it" → original DM message gets a ✅, message is posted to the
   support channel as `*Name* (@user) > message`.
+- Once a ticket exists, further replies from the user **in that same DM
+  thread** are relayed straight into the ticket's support-channel thread
+  (✅ on the DM message, no repeat "send to support?" prompt) — only a
+  reply typed on the still-pending "send to support?" question itself (no
+  ticket yet) is dropped, since there's nothing to relay it to.
 - A message in the support channel that isn't a `?`-prefixed reply inside a
   thread (general channel chatter, or non-`?` chatter inside a thread) is
   just left alone — no permission check, nothing relayed or logged.

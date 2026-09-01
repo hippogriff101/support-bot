@@ -109,6 +109,15 @@ def create_reply(
         conn.commit()
 
 
+def get_ticket_by_dm(dm_channel: str, dm_ts: str, path: str = DB_PATH):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT * FROM tickets WHERE dm_channel = ? AND dm_ts = ?", (dm_channel, dm_ts)
+        )
+        return cur.fetchone()
+
+
 def get_reply_by_support_ts(support_reply_ts: str, path: str = DB_PATH):
     with closing(sqlite3.connect(path)) as conn:
         conn.row_factory = sqlite3.Row

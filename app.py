@@ -56,6 +56,24 @@ def handle_message(event, client, logger):
     # --- Case 1: a DM from a user -> ask if they want it sent to support ---
     if event.get("channel_type") == "im":
         user_id = event["user"]
+        thread_ts = event.get("thread_ts")
+
+        # A reply inside an existing ticket's DM thread -> relay it straight
+        # into the support thread instead of starting a new confirmation
+        # flow (which would otherwise spawn a second thread off this reply's
+        # own ts).
+        if thread_ts and thread_ts != ts:
+            ticket = db.get_ticket_by_dm(channel, thread_ts)
+            if ticket is None:
+                return  # a reply on the still-pending "send to support?" prompt — nothing to relay yet
+            quoted_text = "\n".join(f"> {line}" for line in text.splitlines())
+            client.chat_postMessage(
+                channel=SUPPORT_CHANNEL_ID,
+                thread_ts=ticket["support_ts"],
+                text=f"*{real_name(user_id)}* (<@{user_id}>):\n{quoted_text}",
+            )
+            client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
+            return
 
         client.reactions_add(channel=channel, timestamp=ts, name="eyes")
 
