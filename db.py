@@ -22,10 +22,11 @@ support channel can edit or delete the corresponding DM message later:
     author_id         -> who sent the reply, for permission checks
 """
 
+import os
 import sqlite3
 from contextlib import closing
 
-DB_PATH = "tickets.db"
+DB_PATH = os.environ.get("DB_PATH", "tickets.db")
 
 
 def init_db(path: str = DB_PATH) -> None:

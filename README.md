@@ -89,6 +89,12 @@ the first deploy), set `INITIAL_ADMIN_ID` (and optionally
 nothing once it isn't. From there, use `/support promote` in Slack to add
 everyone else, so the JSON file is never touched by hand again.
 
+`macros.json` ships in the repo (tracked, not git-ignored, since there's
+nothing event-specific or secret in it — unlike `helpers.json`) with a few
+generic starter canned replies. Edit it by hand, or manage it live from
+Slack with `/support macros <name> <reply text>` (admins only) — see
+[Commands](#commands).
+
 ## 3. Run
 
 ```bash
@@ -109,10 +115,14 @@ needs to survive restarts/redeploys is `tickets.db`, so give it a persistent
 volume/disk rather than ephemeral container storage — `helpers.json` needs
 the same persistence (see `INITIAL_ADMIN_ID` above for bootstrapping it
 without file access), or every redeploy wipes the roster back to empty and
-re-seeds just the one initial admin. Set the env vars from `.env.example`
-(plus `HELPERS_FILE` if you don't want `helpers.json` in the default
-location) directly in the platform's env var config instead of shipping a
-`.env` file.
+re-seeds just the one initial admin. `macros.json` is a bit different since
+it ships committed with defaults: without a persistent volume, any macros
+you add/update later via `/support macros` are lost on redeploy and it
+resets back to whatever's committed in the repo — usually fine, but worth
+knowing. Set the env vars from `.env.example` (plus `DB_PATH` /
+`HELPERS_FILE` / `MACROS_FILE` if you don't want the default file locations,
+e.g. to point them at a mounted volume) directly in the platform's env var
+config instead of shipping a `.env` file.
 
 ## How it behaves
 
@@ -129,11 +139,19 @@ location) directly in the platform's env var config instead of shipping a
 - A helper posts a `?`-prefixed reply **in a ticket thread** → relayed back
   to the user in their DM thread, signed
   `— Helper's first name, {EVENT_NAME} Support`. Helper's message gets a ✅.
+  If the text after `?` exactly matches a macro name in `macros.json`
+  (case-insensitive), the macro's canned text is sent instead of that text —
+  e.g. `?review` sends whatever `macros.json` has under `"review"` rather
+  than relaying the literal word "review".
 
 ### Commands
 
 - `/support whoami` — anyone: see your own role, if you have one.
 - `/support list` — helpers only: list the current roster.
+- `/support macros` — helpers only: list configured macro names.
+- `/support macros <name> <reply text>` — admins only: add a macro, or
+  overwrite an existing one's text. `<name>` is what goes after the `?`
+  (a leading `?` is stripped if you type one).
 - `/support promote @user <role>` — admins only: add someone to
   `helpers.json`, or update their role if they're already in it. `<role>` is
   optional — defaults to `{EVENT_NAME} Support`.

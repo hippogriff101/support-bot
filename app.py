@@ -9,6 +9,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 import db
 import helpers
+import macros
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -118,6 +119,9 @@ def handle_message(event, client, logger):
             return  # reply on a thread we don't recognise as a ticket
 
         reply_text = text[1:].strip()
+        macro_text = macros.get_macro(reply_text)
+        if macro_text is not None:
+            reply_text = macro_text
 
         sent = client.chat_postMessage(
             channel=ticket["dm_channel"],
@@ -283,7 +287,7 @@ def handle_support_command(ack, respond, command):
 
     usage = (
         "Usage: `/support promote @user <role>` · `/support demote @user` · "
-        "`/support list` · `/support whoami`"
+        "`/support list` · `/support macros [name] [reply text]` · `/support whoami`"
     )
     if not parts:
         respond(usage)
@@ -313,6 +317,32 @@ def handle_support_command(ack, respond, command):
             for uid, info in roster.items()
         ]
         respond("\n".join(lines))
+        return
+
+    if subcommand == "macros":
+        if not helpers.is_helper(caller_id):
+            respond("Only helpers can use this command.")
+            return
+
+        if len(parts) == 1:
+            roster = macros.all_macros()
+            if not roster:
+                respond("No macros configured yet.")
+                return
+            lines = [f"• `?{name}`" for name in sorted(roster)]
+            respond("\n".join(lines))
+            return
+
+        if not helpers.is_admin(caller_id):
+            respond("Only admins can add or update macros.")
+            return
+        if len(parts) < 3:
+            respond("Usage: `/support macros <name> <reply text>` to add/update, or `/support macros` to list.")
+            return
+        macro_name = parts[1].strip().lstrip("?").lower()
+        macro_text = parts[2].strip()
+        macros.add_macro(macro_name, macro_text)
+        respond(f"Macro `?{macro_name}` saved.")
         return
 
     if subcommand in ("promote", "demote"):
