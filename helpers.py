@@ -4,7 +4,7 @@ Backed by a flat JSON file (helpers.json) rather than the ticket DB, since
 it's meant to be hand-editable and event-specific:
 
     {
-      "U078VN0UU2K": {"role": "Bento Support", "admin": true}
+      "U0123ABCDEF": {"role": "Event Support", "admin": true}
     }
 
 Re-read from disk on every lookup — the roster is tiny and rarely touched,

@@ -4,6 +4,10 @@ Slack Bolt (Python), Socket Mode. DM the bot → confirm → forwarded to a
 private support channel → helper replies with a `?` prefix → relayed back
 to the user in the original DM thread.
 
+A generic, reusable support-ticket bot — everything event-specific
+(support channel, roster, event name) is config, not code, so the same
+bot works for any Slack-run event.
+
 ## 1. Create the Slack app
 
 Go to https://api.slack.com/apps → **Create New App** → From scratch.
@@ -62,7 +66,7 @@ Then set up `helpers.json` (git-ignore this per event, it's real roster data):
 
 ```json
 {
-  "U078VN0UU2K": { "role": "Bento Support", "admin": true }
+  "U0123ABCDEF": { "role": "Event Support", "admin": true }
 }
 ```
 
@@ -80,6 +84,17 @@ python app.py
 `tickets.db` (SQLite) is created automatically on first run in the same
 directory. Back it up if you care about ticket history — it's the only
 state the bot keeps.
+
+### Deploying
+
+This is a long-running process (Socket Mode keeps a persistent connection —
+no public URL or webhook needed), so any host that runs a persistent Python
+process works: a small VM, a container platform, etc. The only thing that
+needs to survive restarts/redeploys is `tickets.db`, so give it a persistent
+volume/disk rather than ephemeral container storage, and set the env vars
+from `.env.example` (plus `HELPERS_FILE` if you don't want `helpers.json` in
+the default location) directly in the platform's env var config instead of
+shipping a `.env` file.
 
 ## How it behaves
 
@@ -140,3 +155,7 @@ state the bot keeps.
     open forever.
   - `/support stats` — quick counts (open tickets, tickets today, per
     helper) for wrapping up an event.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
