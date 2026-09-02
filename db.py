@@ -40,11 +40,28 @@ def init_db(path: str = DB_PATH) -> None:
                 dm_ts TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 original_text TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
         conn.commit()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        conn.commit()
+
+        # Migrate pre-existing DBs that lack the status column.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(tickets)")}
+        if "status" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")
+            conn.commit()
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS replies (
@@ -134,4 +151,33 @@ def update_reply_text(support_reply_ts: str, text: str, path: str = DB_PATH) -> 
 def mark_reply_deleted(support_reply_ts: str, path: str = DB_PATH) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("UPDATE replies SET deleted = 1 WHERE support_reply_ts = ?", (support_reply_ts,))
+        conn.commit()
+
+
+def set_ticket_status(support_ts: str, status: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE tickets SET status = ? WHERE support_ts = ?", (status, support_ts))
+        conn.commit()
+
+
+def count_tickets_by_status(status: str, path: str = DB_PATH) -> int:
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute("SELECT COUNT(*) FROM tickets WHERE status = ?", (status,))
+        return cur.fetchone()[0]
+
+
+def get_setting(key: str, path: str = DB_PATH) -> str | None:
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def set_setting(key: str, value: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
         conn.commit()
