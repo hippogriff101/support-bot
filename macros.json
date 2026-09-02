@@ -1,5 +1,18 @@
 {
-  "review": "Hi! Thanks for messaging us! We have seen your project and it is awaiting review - if it has been longer than 7 days then please send another message and we will get right on it!",
-  "delay": "Sorry for the wait! We're a bit backed up right now but we'll get to your message as soon as we can.",
-  "thanks": "Thanks so much for your patience — glad we could help! Let us know if anything else comes up."
+  "review_time": "Your Bento submission is in the review queue! We review submissions as soon as we can, but it can take some time when there are lots of projects waiting. You don’t need to submit it again — we’ll get to it!",
+  "requirements": "For Bento, you can find all the requirements listed on the Bento website, so if you’re unsure whether your project qualifies, send us the project link and we can help!",
+  "old_project": "You can submit old projects, but you cannot have been either paid for them, be part of a school assignment or already submmited it to another YSWS!",
+  "submission": "To submit your Bento project, use the submission flow provided on our website. Make sure you’ve included the required project information and links before submitting. If you’re stuck somewhere, send us a message and we’ll help!",
+  "changes": "If your Bento submission needs changes, don’t worry! We’ll let you know what needs fixing or adding. Once you’ve made the requested changes, follow the instructions provided to resubmit.",
+  "rejected": "If your Bento project wasn’t approved, the reason should be included with the review result. If you don’t understand the feedback, send us what you received and we can help explain what it means.",
+  "shipping": "Once your Bento project has been approved and is ready for fulfilment, there can still be some time before your grant is sent. If you have been waiting a while, feel free to message us again!",
+  "bonus": "Bento has optional bonus categories for things like content and a logo. These are separate from the main project requirement, so you don’t necessarily need to complete them to participate.",
+  "logo": "The Bento logo bonus is an optional part of the programme. Check the current Bento requirements on our website for what qualifies, and if you’re unsure whether your logo meets them, send us a message!",
+  "content": "Bento has an optional content bonus. If you’re making content for the programme, check the current requirements on our website carefully so your submission includes everything needed for the bonus.",
+  "age": "Like all other Hack Club programs, Bento is limited to ages 13 to 18 only! ",
+  "error": "Sorry you’re running into an issue! Please send us the exact error message, a screenshot if possible, and what you were trying to do when it happened. That’ll make it much easier for us to figure out what’s wrong.",
+  "other_ysws": "That sounds like a question about another YSWS rather than Bento! The rules, rewards and submission process can be different between programmes. If you tell us which YSWS you’re asking about, we can point you towards the right place.",
+  "fraud": "Thanks for messaging! Sadly, we can't help with any issues to do with Fraud! If you need to talk to someone about your project, fraud status, etc - please DM the Fraud Squad at @Fraud Squad!",
+  "not_sure": "I’m not completely sure about this one, and I don’t want to give you the wrong information. Let me check with the relevant team and we’ll get back to you!",
+  "thanks": "Thanks so much for your patience - glad we could help! Let us know if anything else comes up."
 }
