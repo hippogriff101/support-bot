@@ -114,6 +114,12 @@ def _refresh_stats(client) -> None:
             client.chat_delete(channel=SUPPORT_CHANNEL_ID, ts=old_ts)
         except Exception as e:
             logging.debug("Couldn't delete previous anchored stats message (ts=%s): %s", old_ts, e)
+            try:
+                client.chat_update(channel=SUPPORT_CHANNEL_ID, ts=old_ts, text="Support stats", blocks=blocks)
+                return
+            except Exception as e2:
+                logging.debug("Couldn't update previous stats message (ts=%s): %s", old_ts, e2)
+
     posted = client.chat_postMessage(channel=SUPPORT_CHANNEL_ID, text="Support stats", blocks=blocks)
     db.set_setting(STATS_SETTING, posted["ts"])
 
