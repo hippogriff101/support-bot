@@ -17,6 +17,10 @@ logging.basicConfig(level=logging.INFO)
 SUPPORT_CHANNEL_ID = os.environ["SUPPORT_CHANNEL_ID"]
 EVENT_NAME = os.environ.get("EVENT_NAME", "Event")
 
+STATS_SETTING = "anchored_stats_ts"
+RESOLVED_EMOJI = "ms-green-tick"
+BAR_LEN = 10
+
 MENTION_RE = re.compile(r"^<@([A-Z0-9]+)(?:\|[^>]+)?>$")
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
@@ -43,6 +47,90 @@ def real_name(user_id: str) -> str:
     return _name_cache[user_id]
 
 
+def _support_note(client, ticket, text: str) -> None:
+    """Post a helper-visible note into the ticket's support-channel thread.
+    Never reaches the user's DM."""
+    client.chat_postMessage(
+        channel=SUPPORT_CHANNEL_ID,
+        thread_ts=ticket["support_ts"],
+        text=f"_— {text}_",
+    )
+
+
+def _close_ticket(client, ticket) -> None:
+    """Mark a ticket resolved: green tick on the forwarded message + note in
+    the support thread. Does not message the user."""
+    if ticket["status"] == "open":
+        try:
+            client.reactions_add(channel=SUPPORT_CHANNEL_ID, timestamp=ticket["support_ts"], name=RESOLVED_EMOJI)
+        except Exception:
+            pass  # reaction may already exist
+        db.set_ticket_status(ticket["support_ts"], "closed")
+        _support_note(client, ticket, "This message has been resolved!")
+        update_stats(client)
+
+
+def _reopen_ticket(client, ticket) -> None:
+    """Mark a ticket as needing attention again: drop the green tick and post
+    an 'opened again' note in the support thread."""
+    if ticket["status"] == "closed":
+        try:
+            client.reactions_remove(channel=SUPPORT_CHANNEL_ID, timestamp=ticket["support_ts"], name=RESOLVED_EMOJI)
+        except Exception:
+            pass  # reaction may already be gone
+        db.set_ticket_status(ticket["support_ts"], "open")
+        _support_note(client, ticket, "This message has been opened again.")
+        update_stats(client)
+
+
+def _refresh_stats(client) -> None:
+    open_count = db.count_tickets_by_status("open")
+    closed_count = db.count_tickets_by_status("closed")
+    total = open_count + closed_count
+    if total:
+        filled = round(BAR_LEN * closed_count / total)
+    else:
+        filled = 0
+    bar = "\u2588" * filled + "\u2591" * (BAR_LEN - filled)
+    ratio_line = f"`[{bar}]` {closed_count}/{total} resolved" if total else f"`[{bar}]` No tickets yet"
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f":bar_chart: *Support stats*\n"
+                    f"• Open: *{open_count}*\n"
+                    f"• Resolved: *{closed_count}*\n"
+                    f"{ratio_line}"
+                ),
+            },
+        }
+    ]
+
+    old_ts = db.get_setting(STATS_SETTING)
+    if old_ts:
+        try:
+            client.chat_delete(channel=SUPPORT_CHANNEL_ID, ts=old_ts)
+        except Exception as e:
+            logging.debug("Couldn't delete previous anchored stats message (ts=%s): %s", old_ts, e)
+            try:
+                client.chat_update(channel=SUPPORT_CHANNEL_ID, ts=old_ts, text="Support stats", blocks=blocks)
+                return
+            except Exception as e2:
+                logging.debug("Couldn't update previous stats message (ts=%s): %s", old_ts, e2)
+
+    posted = client.chat_postMessage(channel=SUPPORT_CHANNEL_ID, text="Support stats", blocks=blocks)
+    db.set_setting(STATS_SETTING, posted["ts"])
+
+
+def update_stats(client) -> None:
+    """Delete-and-resend the anchored stats message to keep it pinned to the
+    bottom of the support channel."""
+    _refresh_stats(client)
+
+
 @app.event("message")
 def handle_message(event, client, logger):
     # Ignore the bot's own messages, edits, joins, etc.
@@ -66,6 +154,7 @@ def handle_message(event, client, logger):
             ticket = db.get_ticket_by_dm(channel, thread_ts)
             if ticket is None:
                 return  # a reply on the still-pending "send to support?" prompt — nothing to relay yet
+            _reopen_ticket(client, ticket)
             quoted_text = "\n".join(f"> {line}" for line in text.splitlines())
             client.chat_postMessage(
                 channel=SUPPORT_CHANNEL_ID,
@@ -138,6 +227,13 @@ def handle_message(event, client, logger):
             return  # reply on a thread we don't recognise as a ticket
 
         reply_text = text[1:].strip()
+
+        # `?close` resolves the ticket without relaying anything to the user.
+        if reply_text.lower() == "close":
+            _close_ticket(client, ticket)
+            return
+
+        _reopen_ticket(client, ticket)
         macro_text = macros.get_macro(reply_text)
         if macro_text is not None:
             reply_text = macro_text
@@ -145,7 +241,7 @@ def handle_message(event, client, logger):
         sent = client.chat_postMessage(
             channel=ticket["dm_channel"],
             thread_ts=ticket["dm_ts"],
-            text=f"{reply_text}\n\n_— {real_name(user_id)}, {EVENT_NAME} Support_",
+            text=f"{reply_text}\n\n_— <@{user_id}>, {EVENT_NAME} Support_",
         )
         db.create_reply(ts, ticket["id"], ticket["dm_channel"], sent["ts"], user_id, reply_text)
         client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
@@ -176,6 +272,8 @@ def handle_confirm(ack, body, client):
         text="Sent to the support team ✅",
         blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": "Sent to the support team ✅"}}],
     )
+
+    update_stats(client)
 
 
 @app.action("cancel_send_support")
@@ -259,7 +357,7 @@ def handle_edit_reply_submit(ack, body, client, view):
     client.chat_update(
         channel=reply["dm_channel"],
         ts=reply["dm_ts"],
-        text=f"{new_text}\n\n_— {real_name(reply['author_id'])}, {EVENT_NAME} Support_",
+        text=f"{new_text}\n\n_— <@{reply['author_id']}>, {EVENT_NAME} Support_",
     )
     db.update_reply_text(support_reply_ts, new_text)
     client.reactions_add(channel=SUPPORT_CHANNEL_ID, timestamp=support_reply_ts, name="pencil2")
@@ -392,6 +490,10 @@ def handle_support_command(ack, respond, command):
 
 
 if __name__ == "__main__":
+    try:
+        update_stats(app.client)
+    except Exception as e:
+        logging.warning("Couldn't refresh support stats on startup: %s", e)
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     print("Support bot running (Socket Mode)...")
     handler.start()
