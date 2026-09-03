@@ -489,7 +489,10 @@ def handle_support_command(ack, respond, command):
 
 
 if __name__ == "__main__":
-    update_stats(app.client)
+    try:
+        update_stats(app.client)
+    except Exception as e:
+        logging.warning("Couldn't refresh support stats on startup: %s", e)
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     print("Support bot running (Socket Mode)...")
     handler.start()
