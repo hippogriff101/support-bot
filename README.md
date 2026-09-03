@@ -146,12 +146,24 @@ config instead of shipping a `.env` file.
   `helpers.json`** gets a ❌ reaction and an ephemeral "you don't have
   permission" notice (visible only to them) — nothing is relayed.
 - A helper posts a `?`-prefixed reply **in a ticket thread** → relayed back
-  to the user in their DM thread, signed
-  `— Helper's first name, {EVENT_NAME} Support`. Helper's message gets a ✅.
+  to the user in their DM thread, tagged with the helper's Slack mention
+  `— @Helper, {EVENT_NAME} Support`. Helper's message gets a ✅.
   If the text after `?` exactly matches a macro name in `macros.json`
   (case-insensitive), the macro's canned text is sent instead of that text —
   e.g. `?review` sends whatever `macros.json` has under `"review"` rather
   than relaying the literal word "review".
+- A helper types `?close` **in a ticket thread** → the ticket is marked
+  **resolved**: the bot posts a helper-only "This message has been resolved!"
+  note in the support thread (nothing is DM'd to the user) and puts a
+  :ms-green-tick: on the original forwarded message. Any later activity on
+  the ticket — the user replying in their DM, or a helper sending a `?`
+  reply — **reopens** it: the green tick is removed and an "opened again"
+  note is posted in the support thread.
+- An anchored **Support stats** message stays pinned at the bottom of the
+  support channel, showing how many tickets are Open vs Resolved plus a
+  progress bar. It deletes itself and reposts at the bottom whenever a
+  ticket is opened/closed/reopened (so it never drifts up as messages push
+  by).
 
 ### Commands
 
@@ -184,11 +196,11 @@ already deleted, or the caller isn't the sender/an admin.
 
 ## Notes / things you may want to adjust
 
-- **Signature vs. impersonation**: this deliberately signs replies with the
-  helper's real first name rather than posting *as* them (which would need
-  `chat:write.customize` + faking their name/avatar). Signing keeps it
-  honest about who's actually posting, and doesn't break if a helper's
-  Slack profile changes mid-event.
+- **Signature vs. impersonation**: this relays replies as the bot but tags
+  the helper via their Slack mention (`— @Helper, ...`) rather than posting
+  *as* them (which would need `chat:write.customize` + faking their
+  name/avatar). Tagging keeps it honest about who's actually posting, and
+  doesn't break if a helper's Slack profile changes mid-event.
 - **Multiple tickets per user**: since each ticket is keyed off the user's
   original DM `ts`, a user can open several tickets — each lives in its own
   DM thread and its own support-channel thread, no collisions.
@@ -206,9 +218,6 @@ already deleted, or the caller isn't the sender/an admin.
   - `/support claim` (in a ticket thread) — assign a ticket to the
     replying helper so others know it's being handled; pairs well with the
     "claim/ack" note above.
-  - `/support close` (in a ticket thread) — mark a ticket resolved in the
-    DB and post a closing note to the user, instead of leaving tickets
-    open forever.
   - `/support stats` — quick counts (open tickets, tickets today, per
     helper) for wrapping up an event.
 
