@@ -92,6 +92,7 @@ def _refresh_stats(client) -> None:
     else:
         filled = 0
     bar = "\u2588" * filled + "\u2591" * (BAR_LEN - filled)
+    ratio_line = f"`[{bar}]` {closed_count}/{total} resolved" if total else f"`[{bar}]` No tickets yet"
 
     blocks = [
         {
@@ -102,7 +103,7 @@ def _refresh_stats(client) -> None:
                     f":bar_chart: *Support stats*\n"
                     f"• Open: *{open_count}*\n"
                     f"• Resolved: *{closed_count}*\n"
-                    f"`[{bar}]` {closed_count}/{total} resolved"
+                    f"{ratio_line}"
                 ),
             },
         }
