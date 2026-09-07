@@ -100,10 +100,7 @@ def _refresh_stats(client) -> None:
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f":bar_chart: *Support stats*\n"
-                    f"• Open: *{open_count}*\n"
-                    f"• Resolved: *{closed_count}*\n"
-                    f"{ratio_line}"
+                    f":bar_chart: *Support stats*\n• Open: *{open_count}*\n• Resolved: *{closed_count}*\n{ratio_line}"
                 ),
             },
         }

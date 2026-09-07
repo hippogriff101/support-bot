@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Deliberately conservative: real errors (pyflakes), style/pycodestyle, import
+# order. Skips stricter opinionated rule sets (bugbear, bandit, blind-except,
+# logging, etc.) that would flag this repo's existing patterns — e.g. the
+# broad `except Exception: pass` used for "reaction may already be
+# there/gone" races — as problems they aren't.
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long canned-reply strings are content, not code — not worth wrapping.
+"macros.py" = ["E501"]
