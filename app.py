@@ -23,11 +23,6 @@ STATS_SETTING = "anchored_stats_ts"
 RESOLVED_EMOJI = "ms-green-tick"
 BAR_LEN = 10
 
-# Socket Mode holds no listening port, so an Orchard "Web endpoint" or "Port
-# check" health check can't be used. Instead this touches a heartbeat file
-# every HEARTBEAT_INTERVAL seconds; healthcheck.py (run as Orchard's
-# "Command" check) fails if the file goes stale, which Orchard reads as the
-# pod being unresponsive and restarts it.
 HEARTBEAT_PATH = os.environ.get("HEARTBEAT_PATH", "/tmp/bento_heartbeat")
 HEARTBEAT_INTERVAL = int(os.environ.get("HEARTBEAT_INTERVAL", "20"))
 
