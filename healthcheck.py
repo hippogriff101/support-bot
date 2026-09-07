@@ -8,8 +8,14 @@ import os
 import sys
 import time
 
+DEFAULT_MAX_AGE_SECONDS = 60
+
 HEARTBEAT_PATH = os.environ.get("HEARTBEAT_PATH", "/tmp/bento_heartbeat")
-MAX_AGE_SECONDS = int(os.environ.get("HEARTBEAT_MAX_AGE", "60"))
+try:
+    MAX_AGE_SECONDS = int(os.environ.get("HEARTBEAT_MAX_AGE", DEFAULT_MAX_AGE_SECONDS))
+except ValueError:
+    print(f"invalid HEARTBEAT_MAX_AGE, falling back to {DEFAULT_MAX_AGE_SECONDS}s")
+    MAX_AGE_SECONDS = DEFAULT_MAX_AGE_SECONDS
 
 try:
     age = time.time() - os.path.getmtime(HEARTBEAT_PATH)
