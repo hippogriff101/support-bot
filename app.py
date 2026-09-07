@@ -36,6 +36,10 @@ if os.environ.get("INITIAL_ADMIN_ID"):
 _name_cache: dict[str, str] = {}
 
 
+def signature_role(user_id: str) -> str:
+    return helpers.get_role(user_id) or f"{EVENT_NAME} Support"
+
+
 def real_name(user_id: str) -> str:
     """First name if we have one, falling back to display/real name. Cached
     for the life of the process since it won't change mid-event."""
@@ -238,7 +242,7 @@ def handle_message(event, client, logger):
         sent = client.chat_postMessage(
             channel=ticket["dm_channel"],
             thread_ts=ticket["dm_ts"],
-            text=f"{reply_text}\n\n_— <@{user_id}>, {EVENT_NAME} Support_",
+            text=f"{reply_text}\n\n_— <@{user_id}>, {signature_role(user_id)}_",
         )
         db.create_reply(ts, ticket["id"], ticket["dm_channel"], sent["ts"], user_id, reply_text)
         client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
@@ -354,7 +358,7 @@ def handle_edit_reply_submit(ack, body, client, view):
     client.chat_update(
         channel=reply["dm_channel"],
         ts=reply["dm_ts"],
-        text=f"{new_text}\n\n_— <@{reply['author_id']}>, {EVENT_NAME} Support_",
+        text=f"{new_text}\n\n_— <@{reply['author_id']}>, {signature_role(reply['author_id'])}_",
     )
     db.update_reply_text(support_reply_ts, new_text)
     client.reactions_add(channel=SUPPORT_CHANNEL_ID, timestamp=support_reply_ts, name="pencil2")
@@ -400,8 +404,9 @@ def handle_support_command(ack, respond, command):
     parts = command.get("text", "").strip().split(maxsplit=2)
 
     usage = (
-        "Usage: `/support promote @user <role>` · `/support demote @user` · "
-        "`/support list` · `/support macros [name] [reply text]` · `/support whoami`"
+        "Usage: `/support promote @user <role>` · `/support superpromote @user <role>` · "
+        "`/support demote @user` · `/support list` · `/support macros [name] [reply text]` · "
+        "`/support whoami`"
     )
     if not parts:
         respond(usage)
@@ -459,7 +464,7 @@ def handle_support_command(ack, respond, command):
         respond(f"Macro `?{macro_name}` saved.")
         return
 
-    if subcommand in ("promote", "demote"):
+    if subcommand in ("promote", "superpromote", "demote"):
         if not helpers.is_admin(caller_id):
             respond(f"Only admins can {subcommand} helpers.")
             return
@@ -472,15 +477,18 @@ def handle_support_command(ack, respond, command):
             return
         target_id = match.group(1)
 
-        if subcommand == "promote":
-            role = parts[2].strip() if len(parts) > 2 else f"{EVENT_NAME} Support"
-            helpers.add_helper(target_id, role)
-            respond(f"<@{target_id}> is now a helper: *{role}*.")
-        else:
+        if subcommand == "demote":
             if helpers.remove_helper(target_id):
                 respond(f"<@{target_id}> is no longer a helper.")
             else:
                 respond(f"<@{target_id}> wasn't a helper.")
+            return
+
+        as_admin = subcommand == "superpromote"
+        role = parts[2].strip() if len(parts) > 2 else f"{EVENT_NAME} Support"
+        helpers.add_helper(target_id, role, admin=as_admin)
+        admin_note = " (admin)" if as_admin else ""
+        respond(f"<@{target_id}> is now a helper: *{role}*{admin_note}.")
         return
 
     respond(usage)
