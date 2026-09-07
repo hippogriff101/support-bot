@@ -1,60 +1,29 @@
 # Event Support Bot
 
-Slack Bolt (Python), Socket Mode. DM the bot → confirm → forwarded to a
-private support channel → helper replies with a `?` prefix → relayed back
-to the user in the original DM thread.
-
-A generic, reusable support-ticket bot — everything event-specific
-(support channel, roster, event name) is config, not code, so the same
-bot works for any Slack-run event.
+A Slack bot for event support: DM the bot → confirm → forwarded to a private
+support channel → a helper replies with a `?` prefix → relayed back to the
+user. Everything event-specific (channel, roster, event name) is config, not
+code, so the same bot works for any Slack-run event.
 
 > [!WARNING]
-> This app has been made by Claude Code with assistance by me (freddie) for the YSWS Bento!
+> Built by Claude Code by freddie, for [Bento](https://bento.hackclub.com).
 
 ## 1. Create the Slack app
 
 Go to https://api.slack.com/apps → **Create New App** → From scratch.
 
-### Socket Mode
-- **Settings → Socket Mode** → toggle on.
-- This generates an **app-level token** — create one with the `connections:write`
-  scope. That's your `SLACK_APP_TOKEN` (starts with `xapp-`).
-
-### Bot Token Scopes (OAuth & Permissions → Scopes → Bot Token Scopes)
-- `chat:write` — post messages
-- `im:history` — read DM messages
-- `im:read` — see DM channel info
-- `groups:history` — read messages in the (private) support channel
-- `reactions:write` — add ✅ / 👀 / ❌ reactions
-- `users:read` — look up real names for signatures
-- `commands` — added automatically once you create a slash command below
-
-> If your support channel is public instead of private, use `channels:history`
-> instead of `groups:history`.
-
-### Event Subscriptions (Event Subscriptions → Subscribe to bot events)
-- `message.im`
-- `message.groups` (or `message.channels` if the support channel is public)
-
-### Interactivity & Shortcuts
-- **Interactivity & Shortcuts** → toggle on. (No Request URL needed — Socket
-  Mode handles this.)
-- Under **Shortcuts** → **Create New Shortcut** → **On messages**, add two:
-  - **Edit reply** — callback ID `edit_reply`
-  - **Delete reply** — callback ID `delete_reply`
-
-  These appear on the "..." menu of a message in Slack. They only do
-  anything on a helper's own `?`-reply message in the support channel (see
-  [Message shortcuts](#message-shortcuts) below).
-
-### Slash Commands (Slash Commands → Create New Command)
-No Request URL needed — Socket Mode handles this too.
-- `/support` — usage hint: `promote @user <role> | demote @user | list | whoami`
-
-### Install
-- **Install App to Workspace**. Copy the **Bot User OAuth Token**
-  (`xoxb-...`) — that's your `SLACK_BOT_TOKEN`.
-- Invite the bot into your private support channel: `/invite @YourBotName`.
+- **Socket Mode**: turn it on, create an app-level token with the
+  `connections:write` scope → that's `SLACK_APP_TOKEN`.
+- **Bot Token Scopes**: `chat:write`, `im:history`, `im:read`,
+  `groups:history` (use `channels:history` instead if your support channel
+  is public), `reactions:write`, `users:read`, `commands`.
+- **Event Subscriptions**: `message.im`, `message.groups` (or
+  `message.channels` if public).
+- **Interactivity & Shortcuts**: turn it on, add two "On messages" shortcuts
+  — **Edit reply** (`edit_reply`) and **Delete reply** (`delete_reply`).
+- **Slash Commands**: add `/support`.
+- **Install App to Workspace**, copy the Bot Token (`xoxb-...`) → that's
+  `SLACK_BOT_TOKEN`. Invite the bot into your support channel.
 
 ## 2. Configure
 
@@ -62,38 +31,21 @@ No Request URL needed — Socket Mode handles this too.
 cp .env.example .env
 ```
 
-Fill in:
-- `SLACK_BOT_TOKEN` — the `xoxb-...` token
-- `SLACK_APP_TOKEN` — the `xapp-...` token
-- `SUPPORT_CHANNEL_ID` — right-click the channel → View channel details →
-  copy the Channel ID at the bottom
-- `EVENT_NAME` — used in the signature line sent back to users
+Fill in `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SUPPORT_CHANNEL_ID`, and
+`EVENT_NAME`.
 
-Then set up `helpers.json` (git-ignore this per event, it's real roster data):
+Add at least one admin to `helpers.json` (git-ignored — real roster data):
 
 ```json
-{
-  "U0123ABCDEF": { "role": "Event Support", "admin": true }
-}
+{ "U0123ABCDEF": { "role": "Event Support", "admin": true } }
 ```
 
-At least one entry needs `"admin": true` — that's who can run `/support
-promote` / `/support demote` to grow the roster from there. Get a user's ID
-via their Slack profile → **More** → **Copy member ID**.
+No filesystem access before the first deploy (e.g. Orchard)? Set
+`INITIAL_ADMIN_ID` instead — it seeds that one admin on startup if the
+roster's empty. Use `/support promote` from there to add everyone else.
 
-If you're running somewhere without filesystem access to hand-place that
-file (e.g. a platform like Orchard where you can't just create a file before
-the first deploy), set `INITIAL_ADMIN_ID` (and optionally
-`INITIAL_ADMIN_ROLE`) in the env instead — the bot seeds that one admin into
-`helpers.json` on startup **if the roster is currently empty**, and does
-nothing once it isn't. From there, use `/support promote` in Slack to add
-everyone else, so the JSON file is never touched by hand again.
-
-`macros.json` ships in the repo (tracked, not git-ignored, since there's
-nothing event-specific or secret in it — unlike `helpers.json`) with a few
-generic starter canned replies. Edit it by hand, or manage it live from
-Slack with `/support macros <name> <reply text>` (admins only) — see
-[Commands](#commands).
+`macros.json` ships in the repo with a few generic starter canned replies —
+edit by hand or manage live with `/support macros <name> <reply text>`.
 
 ## 3. Run
 
@@ -102,124 +54,51 @@ pip install -r requirements.txt
 python app.py
 ```
 
-`tickets.db` (SQLite) is created automatically on first run in the same
-directory. Back it up if you care about ticket history — it's the only
-state the bot keeps.
-
 ### Deploying
 
-This is a long-running process (Socket Mode keeps a persistent connection —
-no public URL or webhook needed), so any host that runs a persistent Python
-process works: a small VM, a container platform, etc. The only thing that
-needs to survive restarts/redeploys is `tickets.db`, so give it a persistent
-volume/disk rather than ephemeral container storage — `helpers.json` needs
-the same persistence (see `INITIAL_ADMIN_ID` above for bootstrapping it
-without file access), or every redeploy wipes the roster back to empty and
-re-seeds just the one initial admin. `macros.json` is a bit different since
-it ships committed with defaults: without a persistent volume, any macros
-you add/update later via `/support macros` are lost on redeploy and it
-resets back to whatever's committed in the repo — usually fine, but worth
-knowing. If you do give it a persistent volume too (so added macros survive
-redeploys), a fresh empty volume would otherwise shadow the defaults baked
-into the image — `bootstrap_defaults()` reseeds `review`/`delay`/`thanks`
-into it on first boot if it's empty, same idea as `INITIAL_ADMIN_ID` for
-`helpers.json`. Set the env vars from `.env.example` (plus `DB_PATH` /
-`HELPERS_FILE` / `MACROS_FILE` if you don't want the default file locations,
-e.g. to point them at a mounted volume) directly in the platform's env var
-config instead of shipping a `.env` file.
+This is a long-running Socket Mode process — no public URL or webhook
+needed, so any host that keeps a Python process alive works. Give
+`tickets.db` and `helpers.json` a persistent volume (they reset on redeploy
+otherwise — `helpers.json` back down to just the seeded admin). `macros.json`
+ships with defaults, so it's fine to leave unpersisted; if you do persist it,
+`bootstrap_defaults()` reseeds the defaults on first boot so an empty volume
+doesn't wipe them. Point `DB_PATH` / `HELPERS_FILE` / `MACROS_FILE` at the
+volume instead of shipping a `.env` file.
 
 ## How it behaves
 
-- User DMs the bot → bot reacts 👀 and asks (in-thread) whether to send it
-  to support.
-- "Yes, send it" → original DM message gets a ✅, message is posted to the
-  support channel as `*Name* (@user) > message`.
-- Once a ticket exists, further replies from the user **in that same DM
-  thread** are relayed straight into the ticket's support-channel thread
-  (✅ on the DM message, no repeat "send to support?" prompt) — only a
-  reply typed on the still-pending "send to support?" question itself (no
-  ticket yet) is dropped, since there's nothing to relay it to.
-- A message in the support channel that isn't a `?`-prefixed reply inside a
-  thread (general channel chatter, or non-`?` chatter inside a thread) is
-  just left alone — no permission check, nothing relayed or logged.
-- Someone who posts a `?`-prefixed message **inside a thread** and **isn't in
-  `helpers.json`** gets a ❌ reaction and an ephemeral "you don't have
-  permission" notice (visible only to them) — nothing is relayed.
-- A helper posts a `?`-prefixed reply **in a ticket thread** → relayed back
-  to the user in their DM thread, tagged with the helper's Slack mention
-  `— @Helper, {EVENT_NAME} Support`. Helper's message gets a ✅.
-  If the text after `?` exactly matches a macro name in `macros.json`
-  (case-insensitive), the macro's canned text is sent instead of that text —
-  e.g. `?review` sends whatever `macros.json` has under `"review"` rather
-  than relaying the literal word "review".
-- A helper types `?close` **in a ticket thread** → the ticket is marked
-  **resolved**: the bot posts a helper-only "This message has been resolved!"
-  note in the support thread (nothing is DM'd to the user) and puts a
-  :ms-green-tick: on the original forwarded message. Any later activity on
-  the ticket — the user replying in their DM, or a helper sending a `?`
-  reply — **reopens** it: the green tick is removed and an "opened again"
-  note is posted in the support thread.
-- An anchored **Support stats** message stays pinned at the bottom of the
-  support channel, showing how many tickets are Open vs Resolved plus a
-  progress bar. It deletes itself and reposts at the bottom whenever a
-  ticket is opened/closed/reopened (so it never drifts up as messages push
-  by).
+- DM the bot → 👀 reaction → "send to support?" prompt. Confirming forwards
+  it to the support channel and marks the DM ✅.
+- Once a ticket exists, further replies in that DM thread relay straight
+  into the ticket's thread — no repeat prompt.
+- A helper's `?text` reply in a ticket thread relays back to the user,
+  signed with their Slack mention. `?macro-name` sends that macro's canned
+  text instead. Only users in `helpers.json` can do this.
+- `?close` resolves a ticket (tick reaction, helper-only note, no DM to the
+  user). Any new activity — the user replying, or another `?` reply —
+  reopens it.
+- A pinned **Support stats** message tracks Open vs Resolved counts.
 
 ### Commands
 
-- `/support whoami` — anyone: see your own role, if you have one.
-- `/support list` — helpers only: list the current roster.
-- `/support macros` — helpers only: list configured macro names.
-- `/support macros <name> <reply text>` — admins only: add a macro, or
-  overwrite an existing one's text. `<name>` is what goes after the `?`
-  (a leading `?` is stripped if you type one).
-- `/support promote @user <role>` — admins only: add someone to
-  `helpers.json`, or update their role if they're already in it. `<role>` is
-  optional — defaults to `{EVENT_NAME} Support`.
-- `/support demote @user` — admins only: remove someone from the roster.
+- `/support whoami` — see your own role.
+- `/support list` — helpers only: list the roster.
+- `/support macros [name] [reply text]` — list macros, or (admins) add/update one.
+- `/support promote @user [role]` / `/support demote @user` — admins only.
 
 ### Message shortcuts
 
-Available from the "..." menu on any message in the support channel, but
-only act on a tracked `?`-reply message (see [Configure](#interactivity--shortcuts)
-for setting these up in the Slack app config):
+On a helper's own `?`-reply message: **Edit reply** and **Delete reply**,
+usable by the original sender or an admin.
 
-- **Edit reply** — opens a modal with the reply text; saving updates the
-  copy already sent to the user in their DM and adds a ✏️ reaction to the
-  support-channel message. Usable by the original sender or an admin.
-- **Delete reply** — deletes the message from the user's DM and swaps the
-  support-channel message's ✅ for a ❌. Usable by the original sender or an
-  admin.
+## Notes
 
-Both no-op with an ephemeral notice if the message isn't a tracked reply, was
-already deleted, or the caller isn't the sender/an admin.
-
-## Notes / things you may want to adjust
-
-- **Signature vs. impersonation**: this relays replies as the bot but tags
-  the helper via their Slack mention (`— @Helper, ...`) rather than posting
-  *as* them (which would need `chat:write.customize` + faking their
-  name/avatar). Tagging keeps it honest about who's actually posting, and
-  doesn't break if a helper's Slack profile changes mid-event.
-- **Multiple tickets per user**: since each ticket is keyed off the user's
-  original DM `ts`, a user can open several tickets — each lives in its own
-  DM thread and its own support-channel thread, no collisions.
-- **Restarts**: SQLite means open tickets survive a bot restart. In-flight
-  "Yes/No" confirmation buttons do NOT survive a restart (their state lives
-  in the button's `value`, not the DB) — if that matters for your event,
-  say so and I'll persist those too.
-- **No claim/ack step**: any helper in the channel can answer any ticket.
-  Easy to add a "claim" button if multiple helpers might collide on the
-  same ticket.
-- **`helpers.json` reload**: it's re-read from disk on every check, so a
-  manual edit (or a `/support promote`) takes effect immediately — no
-  restart needed.
-- **Other commands worth adding, if useful**:
-  - `/support claim` (in a ticket thread) — assign a ticket to the
-    replying helper so others know it's being handled; pairs well with the
-    "claim/ack" note above.
-  - `/support stats` — quick counts (open tickets, tickets today, per
-    helper) for wrapping up an event.
+- Replies are tagged with the helper's Slack mention rather than posted
+  *as* them, to avoid needing `chat:write.customize` and faking identities.
+- A user can open multiple tickets — each gets its own DM/support thread.
+- In-flight "Yes/No" confirmation buttons don't survive a bot restart
+  (open tickets do, via SQLite).
+- Any helper can answer any ticket — no claim/ack step.
 
 ## License
 
