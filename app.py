@@ -2,8 +2,6 @@ import json
 import logging
 import os
 import re
-import threading
-import time
 
 from dotenv import load_dotenv
 from slack_bolt import App
@@ -23,19 +21,6 @@ STATS_SETTING = "anchored_stats_ts"
 RESOLVED_EMOJI = "ms-green-tick"
 BAR_LEN = 10
 
-
-def _parse_positive_int(env_var: str, default: int) -> int:
-    try:
-        value = int(os.environ.get(env_var, default))
-    except (TypeError, ValueError):
-        logging.warning("Invalid %s, falling back to %d", env_var, default)
-        return default
-    return max(value, 1)
-
-
-HEARTBEAT_PATH = os.environ.get("HEARTBEAT_PATH", "/tmp/bento_heartbeat")
-HEARTBEAT_INTERVAL = _parse_positive_int("HEARTBEAT_INTERVAL", 20)
-
 MENTION_RE = re.compile(r"^<@([A-Z0-9]+)(?:\|[^>]+)?>$")
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
@@ -47,28 +32,6 @@ if os.environ.get("INITIAL_ADMIN_ID"):
         os.environ["INITIAL_ADMIN_ID"],
         os.environ.get("INITIAL_ADMIN_ROLE", f"{EVENT_NAME} Support"),
     )
-
-
-def _heartbeat_loop() -> None:
-    consecutive_failures = 0
-    while True:
-        try:
-            with open(HEARTBEAT_PATH, "w") as f:
-                f.write(str(time.time()))
-            consecutive_failures = 0
-        except OSError as e:
-            consecutive_failures += 1
-            # Warn on the first failure, then only periodically after that —
-            # an unwritable path shouldn't flood the logs once every
-            # HEARTBEAT_INTERVAL seconds forever.
-            if consecutive_failures == 1 or consecutive_failures % 30 == 0:
-                logging.warning(
-                    "Couldn't write heartbeat file %s (%d consecutive failures): %s",
-                    HEARTBEAT_PATH,
-                    consecutive_failures,
-                    e,
-                )
-        time.sleep(HEARTBEAT_INTERVAL)
 
 
 _name_cache: dict[str, str] = {}
@@ -536,8 +499,6 @@ if __name__ == "__main__":
         )
     except Exception as e:
         logging.warning("Couldn't post startup message to support channel: %s", e)
-
-    threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     print("Support bot running (Socket Mode)...")
