@@ -129,9 +129,7 @@ def create_reply(
 def get_ticket_by_dm(dm_channel: str, dm_ts: str, path: str = DB_PATH):
     with closing(sqlite3.connect(path)) as conn:
         conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            "SELECT * FROM tickets WHERE dm_channel = ? AND dm_ts = ?", (dm_channel, dm_ts)
-        )
+        cur = conn.execute("SELECT * FROM tickets WHERE dm_channel = ? AND dm_ts = ?", (dm_channel, dm_ts))
         return cur.fetchone()
 
 
@@ -176,8 +174,7 @@ def get_setting(key: str, path: str = DB_PATH) -> str | None:
 def set_setting(key: str, value: str, path: str = DB_PATH) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
         conn.commit()
