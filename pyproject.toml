@@ -12,3 +12,10 @@ select = ["E", "F", "W", "I"]
 [tool.ruff.lint.per-file-ignores]
 # Long canned-reply strings are content, not code — not worth wrapping.
 "macros.py" = ["E501"]
+
+[tool.pytest.ini_options]
+# app.py/db.py/etc. are flat top-level modules (not a package), so put the
+# repo root on sys.path regardless of how pytest is invoked — otherwise
+# `import db` from tests/test_db.py only resolves under `python -m pytest`
+# (which adds cwd to sys.path as a side effect), not bare `pytest`.
+pythonpath = ["."]
