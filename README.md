@@ -65,6 +65,10 @@ ships with defaults, so it's fine to leave unpersisted; if you do persist it,
 doesn't wipe them. Point `DB_PATH` / `HELPERS_FILE` / `MACROS_FILE` at the
 volume instead of shipping a `.env` file.
 
+On startup the bot posts "✅ {EVENT_NAME} support bot is online." to the
+support channel, so you can tell at a glance after a deploy/restart that it
+actually came back up.
+
 ## How it behaves
 
 - DM the bot → 👀 reaction → "send to support?" prompt. Confirming forwards

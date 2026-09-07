@@ -491,6 +491,14 @@ if __name__ == "__main__":
         update_stats(app.client)
     except Exception as e:
         logging.warning("Couldn't refresh support stats on startup: %s", e)
+
+    try:
+        app.client.chat_postMessage(
+            channel=SUPPORT_CHANNEL_ID, text=f":white_check_mark: {EVENT_NAME} support bot is online."
+        )
+    except Exception as e:
+        logging.warning("Couldn't post startup message to support channel: %s", e)
+
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     print("Support bot running (Socket Mode)...")
     handler.start()
