@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 
 from dotenv import load_dotenv
 from slack_bolt import App
@@ -21,6 +23,14 @@ STATS_SETTING = "anchored_stats_ts"
 RESOLVED_EMOJI = "ms-green-tick"
 BAR_LEN = 10
 
+# Socket Mode holds no listening port, so an Orchard "Web endpoint" or "Port
+# check" health check can't be used. Instead this touches a heartbeat file
+# every HEARTBEAT_INTERVAL seconds; healthcheck.py (run as Orchard's
+# "Command" check) fails if the file goes stale, which Orchard reads as the
+# pod being unresponsive and restarts it.
+HEARTBEAT_PATH = os.environ.get("HEARTBEAT_PATH", "/tmp/bento_heartbeat")
+HEARTBEAT_INTERVAL = int(os.environ.get("HEARTBEAT_INTERVAL", "20"))
+
 MENTION_RE = re.compile(r"^<@([A-Z0-9]+)(?:\|[^>]+)?>$")
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
@@ -32,6 +42,17 @@ if os.environ.get("INITIAL_ADMIN_ID"):
         os.environ["INITIAL_ADMIN_ID"],
         os.environ.get("INITIAL_ADMIN_ROLE", f"{EVENT_NAME} Support"),
     )
+
+
+def _heartbeat_loop() -> None:
+    while True:
+        try:
+            with open(HEARTBEAT_PATH, "w") as f:
+                f.write(str(time.time()))
+        except OSError as e:
+            logging.warning("Couldn't write heartbeat file %s: %s", HEARTBEAT_PATH, e)
+        time.sleep(HEARTBEAT_INTERVAL)
+
 
 _name_cache: dict[str, str] = {}
 
@@ -491,6 +512,16 @@ if __name__ == "__main__":
         update_stats(app.client)
     except Exception as e:
         logging.warning("Couldn't refresh support stats on startup: %s", e)
+
+    try:
+        app.client.chat_postMessage(
+            channel=SUPPORT_CHANNEL_ID, text=f":white_check_mark: {EVENT_NAME} support bot is online."
+        )
+    except Exception as e:
+        logging.warning("Couldn't post startup message to support channel: %s", e)
+
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()
+
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     print("Support bot running (Socket Mode)...")
     handler.start()

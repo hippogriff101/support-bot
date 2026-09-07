@@ -65,6 +65,15 @@ ships with defaults, so it's fine to leave unpersisted; if you do persist it,
 doesn't wipe them. Point `DB_PATH` / `HELPERS_FILE` / `MACROS_FILE` at the
 volume instead of shipping a `.env` file.
 
+On startup the bot posts "✅ {EVENT_NAME} support bot is online." to the
+support channel, and every `HEARTBEAT_INTERVAL` seconds (default 20) touches
+`HEARTBEAT_PATH` (default `/tmp/bento_heartbeat`). If your host supports
+health checks, add one of type **Command** running `python healthcheck.py`
+— it exits non-zero if the heartbeat file is missing or older than
+`HEARTBEAT_MAX_AGE` seconds (default 60), so the platform can restart a
+stuck pod. Socket Mode holds no listening port, so a Web-endpoint or
+Port-check health check won't work here.
+
 ## How it behaves
 
 - DM the bot → 👀 reaction → "send to support?" prompt. Confirming forwards
