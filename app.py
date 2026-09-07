@@ -33,7 +33,6 @@ if os.environ.get("INITIAL_ADMIN_ID"):
         os.environ.get("INITIAL_ADMIN_ROLE", f"{EVENT_NAME} Support"),
     )
 
-
 _name_cache: dict[str, str] = {}
 
 
