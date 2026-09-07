@@ -404,7 +404,7 @@ def handle_support_command(ack, respond, command):
     parts = command.get("text", "").strip().split(maxsplit=2)
 
     usage = (
-        "Usage: `/support promote @user <role>` · `/support superpromote @user <role>` · "
+        "Usage: `/support promote @user [role]` · `/support superpromote @user [role]` · "
         "`/support demote @user` · `/support list` · `/support macros [name] [reply text]` · "
         "`/support whoami`"
     )
@@ -473,7 +473,7 @@ def handle_support_command(ack, respond, command):
             return
         match = MENTION_RE.match(parts[1])
         if not match:
-            respond("Couldn't find a user to promote — mention them like `@user`.")
+            respond(f"Couldn't find a user to {subcommand} — mention them like `@user`.")
             return
         target_id = match.group(1)
 
