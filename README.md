@@ -6,7 +6,7 @@ user. Everything event-specific (channel, roster, event name) is config, not
 code, so the same bot works for any Slack-run event.
 
 > [!WARNING]
-> Built by Claude Code by freddie, for [Bento](https://bento.hackclub.com).
+> This app has been made by Claude Code with assistance by me (freddie) for the YSWS Bento!
 
 ## 1. Create the Slack app
 
