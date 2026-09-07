@@ -1,11 +1,5 @@
 """Liveness check for Orchard's "Command" health check type.
 
-Socket Mode holds no listening port, so a "Web endpoint" or "Port check"
-can't be used here. Instead, app.py touches HEARTBEAT_PATH every
-HEARTBEAT_INTERVAL seconds from a background thread; this script exits 0 if
-that file was touched recently and 1 otherwise (missing or stale), which
-Orchard reads as the pod being unresponsive and restarts it.
-
 Configure in Orchard as a "Command" health check running:
     python healthcheck.py
 """
