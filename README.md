@@ -76,7 +76,9 @@ actually came back up.
 - Once a ticket exists, further replies in that DM thread relay straight
   into the ticket's thread — no repeat prompt.
 - A helper's `?text` reply in a ticket thread relays back to the user,
-  signed with their Slack mention. `?macro-name` sends that macro's canned
+  signed with their Slack mention and their own role from `helpers.json`
+  (e.g. `— @Helper, Clubs Team`), falling back to `{EVENT_NAME} Support` if
+  they somehow don't have one set. `?macro-name` sends that macro's canned
   text instead. Only users in `helpers.json` can do this.
 - `?close` resolves a ticket (tick reaction, helper-only note, no DM to the
   user). Any new activity — the user replying, or another `?` reply —
@@ -88,7 +90,13 @@ actually came back up.
 - `/support whoami` — see your own role.
 - `/support list` — helpers only: list the roster.
 - `/support macros [name] [reply text]` — list macros, or (admins) add/update one.
-- `/support promote @user [role]` / `/support demote @user` — admins only.
+- `/support promote @user [role]` — admins only: add/update a helper. Role
+  defaults to `{EVENT_NAME} Support` if omitted; never demotes an existing
+  admin.
+- `/support superpromote @user [role]` — admins only: same as `promote`, but
+  also grants admin.
+- `/support demote @user` — admins only: remove someone from the roster
+  entirely.
 
 ### Message shortcuts
 
@@ -97,8 +105,9 @@ usable by the original sender or an admin.
 
 ## Notes
 
-- Replies are tagged with the helper's Slack mention rather than posted
-  *as* them, to avoid needing `chat:write.customize` and faking identities.
+- Replies are tagged with the helper's Slack mention and role rather than
+  posted *as* them, to avoid needing `chat:write.customize` and faking
+  identities.
 - A user can open multiple tickets — each gets its own DM/support thread.
 - In-flight "Yes/No" confirmation buttons don't survive a bot restart
   (open tickets do, via SQLite).
