@@ -502,7 +502,7 @@ if __name__ == "__main__":
 
     try:
         app.client.chat_postMessage(
-            channel=SUPPORT_CHANNEL_ID, text=f":white_check_mark: {EVENT_NAME} support bot is online."
+            channel=SUPPORT_CHANNEL_ID, text=f"{EVENT_NAME} support bot has been deployed sucessfully."
         )
     except Exception as e:
         logging.warning("Couldn't post startup message to support channel: %s", e)
