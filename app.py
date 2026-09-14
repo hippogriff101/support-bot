@@ -33,22 +33,32 @@ if os.environ.get("INITIAL_ADMIN_ID"):
         os.environ.get("INITIAL_ADMIN_ROLE", f"{EVENT_NAME} Support"),
     )
 
-_name_cache: dict[str, str] = {}
+_profile_cache: dict[str, dict] = {}
 
 
 def signature_role(user_id: str) -> str:
     return helpers.get_role(user_id) or f"{EVENT_NAME} Support"
 
 
-def real_name(user_id: str) -> str:
-    """First name if we have one, falling back to display/real name. Cached
-    for the life of the process since it won't change mid-event."""
-    if user_id not in _name_cache:
+def _profile(user_id: str) -> dict:
+    """Name + avatar for a user, cached for the life of the process since
+    they won't change mid-event."""
+    if user_id not in _profile_cache:
         profile = app.client.users_info(user=user_id)["user"]["profile"]
-        _name_cache[user_id] = (
-            profile.get("first_name") or profile.get("display_name") or profile.get("real_name") or user_id
-        )
-    return _name_cache[user_id]
+        _profile_cache[user_id] = {
+            "name": profile.get("first_name") or profile.get("display_name") or profile.get("real_name") or user_id,
+            "icon_url": profile.get("image_192") or profile.get("image_72") or profile.get("image_512"),
+        }
+    return _profile_cache[user_id]
+
+
+def real_name(user_id: str) -> str:
+    """First name if we have one, falling back to display/real name."""
+    return _profile(user_id)["name"]
+
+
+def avatar_url(user_id: str) -> str | None:
+    return _profile(user_id)["icon_url"]
 
 
 def _support_note(client, ticket, text: str) -> None:
@@ -161,6 +171,8 @@ def handle_message(event, client, logger):
                 channel=SUPPORT_CHANNEL_ID,
                 thread_ts=ticket["support_ts"],
                 text=f"*{real_name(user_id)}* (<@{user_id}>):\n{quoted_text}",
+                username=real_name(user_id),
+                icon_url=avatar_url(user_id),
             )
             client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
             return
@@ -249,6 +261,8 @@ def handle_message(event, client, logger):
             channel=ticket["dm_channel"],
             thread_ts=ticket["dm_ts"],
             text=f"{reply_text}\n\n_— <@{user_id}>, {signature_role(user_id)}_",
+            username=real_name(user_id),
+            icon_url=avatar_url(user_id),
         )
         db.create_reply(ts, ticket["id"], ticket["dm_channel"], sent["ts"], user_id, reply_text)
         client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
@@ -267,6 +281,8 @@ def handle_confirm(ack, body, client):
     posted = client.chat_postMessage(
         channel=SUPPORT_CHANNEL_ID,
         text=f"*{real_name(user_id)}* (<@{user_id}>):\n{quoted_text}",
+        username=real_name(user_id),
+        icon_url=avatar_url(user_id),
     )
     db.create_ticket(posted["ts"], dm_channel, dm_ts, user_id, original_text)
 
