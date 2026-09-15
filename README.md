@@ -22,7 +22,9 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
   this scope to an already-installed app, reinstall it to the workspace to
   pick up the new permission.
 - **Event Subscriptions**: `message.im`, `message.groups` (or
-  `message.channels` if public).
+  `message.channels` if public), `app_home_opened`.
+- **App Home**: turn on the **Home Tab** (Messages Tab can stay off) — this
+  is what makes the stats page in [How it behaves](#how-it-behaves) show up.
 - **Interactivity & Shortcuts**: turn it on, add two "On messages" shortcuts
   — **Edit reply** (`edit_reply`) and **Delete reply** (`delete_reply`).
 - **Slash Commands**: add `/support`.
@@ -89,7 +91,17 @@ actually came back up.
 - `?close` resolves a ticket (tick reaction, helper-only note, no DM to the
   user). Any new activity — the user replying, or another `?` reply —
   reopens it.
-- A pinned **Support stats** message tracks Open vs Resolved counts.
+- `?claim` in a ticket thread records which helper is handling it — a
+  helper-only note in the thread, nothing to the user, and it doesn't stop
+  anyone else from replying (see [Notes](#notes)). Purely for stats/context.
+- A pinned **Support stats** message in the support channel tracks Open vs
+  Resolved counts.
+- The bot's **Home tab** (click its name/icon in Slack) shows a live stats
+  page: anyone who isn't a helper just sees a "DM me for help" notice.
+  Helpers see the same Open/Resolved counts plus a per-helper reply-count
+  leaderboard. Admins additionally see each helper's resolved-ticket count,
+  total people who've DM'd the bot, total tickets all-time, and tickets
+  opened today.
 
 ### Commands
 
@@ -122,7 +134,9 @@ posted, so an edited reply keeps showing whoever sent the original.
 - A user can open multiple tickets — each gets its own DM/support thread.
 - In-flight "Yes/No" confirmation buttons don't survive a bot restart
   (open tickets do, via SQLite).
-- Any helper can answer any ticket — no claim/ack step.
+- `?claim` is informational only, not enforcement — any helper can still
+  answer any ticket even after someone else claims it. It exists so stats
+  can attribute a ticket to whoever's handling it, not to gate replies.
 
 ## License
 

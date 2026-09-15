@@ -11,6 +11,10 @@ DM/thread:
     dm_ts       -> the ts of the user's original message (also the
                    thread_ts we reply under, back in the DM)
     user_id     -> who asked the question
+    claimed_by  -> helper who ran `?claim` on it, if any (informational —
+                   doesn't gate who else can reply)
+    resolved_by -> helper who last ran `?close` on it, if any; only
+                   meaningful while status is 'closed'
 
 A "reply" is one helper message relayed into a user's DM. We track the ts
 of both copies so a message shortcut on the helper's "?" message in the
@@ -56,10 +60,16 @@ def init_db(path: str = DB_PATH) -> None:
         )
         conn.commit()
 
-        # Migrate pre-existing DBs that lack the status column.
+        # Migrate pre-existing DBs that lack columns added later.
         cols = {row[1] for row in conn.execute("PRAGMA table_info(tickets)")}
         if "status" not in cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")
+            conn.commit()
+        if "claimed_by" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN claimed_by TEXT")
+            conn.commit()
+        if "resolved_by" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN resolved_by TEXT")
             conn.commit()
 
         conn.execute(
@@ -152,9 +162,21 @@ def mark_reply_deleted(support_reply_ts: str, path: str = DB_PATH) -> None:
         conn.commit()
 
 
-def set_ticket_status(support_ts: str, status: str, path: str = DB_PATH) -> None:
+def set_ticket_status(support_ts: str, status: str, resolved_by: str | None = None, path: str = DB_PATH) -> None:
     with closing(sqlite3.connect(path)) as conn:
-        conn.execute("UPDATE tickets SET status = ? WHERE support_ts = ?", (status, support_ts))
+        if resolved_by is not None:
+            conn.execute(
+                "UPDATE tickets SET status = ?, resolved_by = ? WHERE support_ts = ?",
+                (status, resolved_by, support_ts),
+            )
+        else:
+            conn.execute("UPDATE tickets SET status = ? WHERE support_ts = ?", (status, support_ts))
+        conn.commit()
+
+
+def set_ticket_claim(support_ts: str, user_id: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE tickets SET claimed_by = ? WHERE support_ts = ?", (user_id, support_ts))
         conn.commit()
 
 
@@ -162,6 +184,43 @@ def count_tickets_by_status(status: str, path: str = DB_PATH) -> int:
     with closing(sqlite3.connect(path)) as conn:
         cur = conn.execute("SELECT COUNT(*) FROM tickets WHERE status = ?", (status,))
         return cur.fetchone()[0]
+
+
+def count_tickets_total(path: str = DB_PATH) -> int:
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute("SELECT COUNT(*) FROM tickets")
+        return cur.fetchone()[0]
+
+
+def count_tickets_today(path: str = DB_PATH) -> int:
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute("SELECT COUNT(*) FROM tickets WHERE date(created_at) = date('now')")
+        return cur.fetchone()[0]
+
+
+def count_unique_requesters(path: str = DB_PATH) -> int:
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute("SELECT COUNT(DISTINCT user_id) FROM tickets")
+        return cur.fetchone()[0]
+
+
+def count_replies_by_helper(path: str = DB_PATH) -> dict[str, int]:
+    """Reply count per helper, keyed by author_id. Excludes deleted replies."""
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute("SELECT author_id, COUNT(*) FROM replies WHERE deleted = 0 GROUP BY author_id")
+        return dict(cur.fetchall())
+
+
+def count_resolved_by_helper(path: str = DB_PATH) -> dict[str, int]:
+    """Currently-resolved ticket count per helper, keyed by resolved_by. A
+    reopened ticket's stale resolved_by doesn't count here since the status
+    filter excludes it."""
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute(
+            "SELECT resolved_by, COUNT(*) FROM tickets WHERE status = 'closed' AND resolved_by IS NOT NULL "
+            "GROUP BY resolved_by"
+        )
+        return dict(cur.fetchall())
 
 
 def get_setting(key: str, path: str = DB_PATH) -> str | None:

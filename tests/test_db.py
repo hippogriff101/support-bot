@@ -90,3 +90,62 @@ def test_init_db_migrates_legacy_db_missing_status_column(tmp_path):
 
     ticket = db.get_ticket_by_support_ts("s1", path=path)
     assert ticket["status"] == "open"
+    assert ticket["claimed_by"] is None
+    assert ticket["resolved_by"] is None
+
+
+def test_ticket_claim(tmp_path):
+    path = str(tmp_path / "tickets.db")
+    db.init_db(path)
+    db.create_ticket("s1", "D1", "d1", "U1", "hi", path=path)
+
+    assert db.get_ticket_by_support_ts("s1", path=path)["claimed_by"] is None
+
+    db.set_ticket_claim("s1", "U_helper", path=path)
+    assert db.get_ticket_by_support_ts("s1", path=path)["claimed_by"] == "U_helper"
+
+    db.set_ticket_claim("s1", "U_other_helper", path=path)
+    assert db.get_ticket_by_support_ts("s1", path=path)["claimed_by"] == "U_other_helper"
+
+
+def test_resolved_by_tracks_and_survives_reopen(tmp_path):
+    path = str(tmp_path / "tickets.db")
+    db.init_db(path)
+    db.create_ticket("s1", "D1", "d1", "U1", "hi", path=path)
+
+    db.set_ticket_status("s1", "closed", resolved_by="U_helper", path=path)
+    ticket = db.get_ticket_by_support_ts("s1", path=path)
+    assert ticket["status"] == "closed"
+    assert ticket["resolved_by"] == "U_helper"
+    assert db.count_resolved_by_helper(path=path) == {"U_helper": 1}
+
+    # Reopening (no resolved_by passed) leaves the stale value in place, but
+    # it no longer counts since count_resolved_by_helper filters on status.
+    db.set_ticket_status("s1", "open", path=path)
+    ticket = db.get_ticket_by_support_ts("s1", path=path)
+    assert ticket["status"] == "open"
+    assert ticket["resolved_by"] == "U_helper"
+    assert db.count_resolved_by_helper(path=path) == {}
+
+
+def test_helper_and_ticket_stats(tmp_path):
+    path = str(tmp_path / "tickets.db")
+    db.init_db(path)
+
+    db.create_ticket("s1", "D1", "d1", "U1", "hi", path=path)
+    db.create_ticket("s2", "D2", "d2", "U2", "hi", path=path)
+    db.create_ticket("s3", "D1", "d3", "U1", "hi again", path=path)
+
+    assert db.count_tickets_total(path=path) == 3
+    assert db.count_unique_requesters(path=path) == 2  # U1 opened two tickets
+    assert db.count_tickets_today(path=path) == 3
+
+    t1 = db.get_ticket_by_support_ts("s1", path=path)
+    t2 = db.get_ticket_by_support_ts("s2", path=path)
+    db.create_reply("r1", t1["id"], "D1", "dr1", "U_helper_a", "hi", path=path)
+    db.create_reply("r2", t1["id"], "D1", "dr2", "U_helper_a", "hi again", path=path)
+    db.create_reply("r3", t2["id"], "D2", "dr3", "U_helper_b", "hi", path=path)
+    db.create_reply("r4", t2["id"], "D2", "dr4", "U_helper_b", "deleted one", path=path)
+    db.mark_reply_deleted("r4", path=path)
+
+    assert db.count_replies_by_helper(path=path) == {"U_helper_a": 2, "U_helper_b": 1}

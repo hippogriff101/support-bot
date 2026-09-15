@@ -71,7 +71,7 @@ def _support_note(client, ticket, text: str) -> None:
     )
 
 
-def _close_ticket(client, ticket) -> None:
+def _close_ticket(client, ticket, resolved_by: str) -> None:
     """Mark a ticket resolved: green tick on the forwarded message + note in
     the support thread. Does not message the user."""
     if ticket["status"] == "open":
@@ -79,9 +79,17 @@ def _close_ticket(client, ticket) -> None:
             client.reactions_add(channel=SUPPORT_CHANNEL_ID, timestamp=ticket["support_ts"], name=RESOLVED_EMOJI)
         except Exception:
             pass  # reaction may already exist
-        db.set_ticket_status(ticket["support_ts"], "closed")
+        db.set_ticket_status(ticket["support_ts"], "closed", resolved_by=resolved_by)
         _support_note(client, ticket, "This message has been resolved!")
         update_stats(client)
+
+
+def _claim_ticket(client, ticket, user_id: str) -> None:
+    """Record who's handling a ticket. Purely informational for support
+    staff — doesn't stop any other helper from replying — and never
+    messages the user."""
+    db.set_ticket_claim(ticket["support_ts"], user_id)
+    _support_note(client, ticket, f"Claimed by <@{user_id}>.")
 
 
 def _reopen_ticket(client, ticket) -> None:
@@ -97,9 +105,7 @@ def _reopen_ticket(client, ticket) -> None:
         update_stats(client)
 
 
-def _refresh_stats(client) -> None:
-    open_count = db.count_tickets_by_status("open")
-    closed_count = db.count_tickets_by_status("closed")
+def _stats_text(open_count: int, closed_count: int) -> str:
     total = open_count + closed_count
     if total:
         filled = round(BAR_LEN * closed_count / total)
@@ -107,18 +113,13 @@ def _refresh_stats(client) -> None:
         filled = 0
     bar = "\u2588" * filled + "\u2591" * (BAR_LEN - filled)
     ratio_line = f"`[{bar}]` {closed_count}/{total} resolved" if total else f"`[{bar}]` No tickets yet"
+    return f":bar_chart: *Support stats*\n• Open: *{open_count}*\n• Resolved: *{closed_count}*\n{ratio_line}"
 
-    blocks = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f":bar_chart: *Support stats*\n• Open: *{open_count}*\n• Resolved: *{closed_count}*\n{ratio_line}"
-                ),
-            },
-        }
-    ]
+
+def _refresh_stats(client) -> None:
+    open_count = db.count_tickets_by_status("open")
+    closed_count = db.count_tickets_by_status("closed")
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": _stats_text(open_count, closed_count)}}]
 
     old_ts = db.get_setting(STATS_SETTING)
     if old_ts:
@@ -243,7 +244,12 @@ def handle_message(event, client, logger):
 
         # `?close` resolves the ticket without relaying anything to the user.
         if reply_text.lower() == "close":
-            _close_ticket(client, ticket)
+            _close_ticket(client, ticket, resolved_by=user_id)
+            return
+
+        # `?claim` is backend-only bookkeeping for support staff — no DM.
+        if reply_text.lower() == "claim":
+            _claim_ticket(client, ticket, user_id)
             return
 
         _reopen_ticket(client, ticket)
@@ -514,6 +520,81 @@ def handle_support_command(ack, respond, command):
         return
 
     respond(usage)
+
+
+def build_home_view(user_id: str) -> dict:
+    """The App Home tab: a generic notice for anyone who isn't a helper,
+    stats (ticket counts + per-agent reply leaderboard) for helpers, and
+    extra org-wide numbers for admins."""
+    if not helpers.is_helper(user_id):
+        return {
+            "type": "home",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f":wave: *{EVENT_NAME} Support*\nDM me here if you need help — "
+                            "I'll check whether you want it sent to the support team."
+                        ),
+                    },
+                }
+            ],
+        }
+
+    open_count = db.count_tickets_by_status("open")
+    closed_count = db.count_tickets_by_status("closed")
+    reply_counts = db.count_replies_by_helper()
+
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "Support stats"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": _stats_text(open_count, closed_count)}},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Support agents*"}},
+    ]
+
+    roster = helpers.all_helpers()
+    if not roster:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "No helpers registered yet."}})
+    else:
+        viewer_is_admin = helpers.is_admin(user_id)
+        resolved_counts = db.count_resolved_by_helper() if viewer_is_admin else {}
+        ordered = sorted(roster.items(), key=lambda kv: reply_counts.get(kv[0], 0), reverse=True)
+        lines = []
+        for uid, info in ordered:
+            role = info.get("role", f"{EVENT_NAME} Support")
+            line = f"• <@{uid}> ({role}) — *{reply_counts.get(uid, 0)}* replies"
+            if viewer_is_admin:
+                line += f", *{resolved_counts.get(uid, 0)}* resolved"
+            lines.append(line)
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+
+    if helpers.is_admin(user_id):
+        blocks.append({"type": "divider"})
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*Admin stats*\n"
+                        f"• People who've DM'd the bot: *{db.count_unique_requesters()}*\n"
+                        f"• Tickets all-time: *{db.count_tickets_total()}*\n"
+                        f"• Tickets today: *{db.count_tickets_today()}*"
+                    ),
+                },
+            }
+        )
+
+    return {"type": "home", "blocks": blocks}
+
+
+@app.event("app_home_opened")
+def handle_app_home_opened(event, client):
+    if event.get("tab") != "home":
+        return  # ignore the Messages tab
+    client.views_publish(user_id=event["user"], view=build_home_view(event["user"]))
 
 
 if __name__ == "__main__":
