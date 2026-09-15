@@ -2,20 +2,26 @@ import json
 import logging
 import os
 import re
+import time
 
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
+import ai
+import canvas
 import db
 import helpers
 import macros
+import media
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 SUPPORT_CHANNEL_ID = os.environ["SUPPORT_CHANNEL_ID"]
+BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 EVENT_NAME = os.environ.get("EVENT_NAME", "Event")
+SUPPORT_TEAM_NAME = os.environ.get("SUPPORT_TEAM_NAME") or EVENT_NAME
 
 STATS_SETTING = "anchored_stats_ts"
 RESOLVED_EMOJI = "ms-green-tick"
@@ -49,6 +55,31 @@ def real_name(user_id: str) -> str:
             profile.get("first_name") or profile.get("display_name") or profile.get("real_name") or user_id
         )
     return _name_cache[user_id]
+
+
+def _support_identity(user_id: str) -> dict:
+    """Custom per-message name/PFP so the user sees who's actually helping:
+    《Firstname》| <event> Support Team, with the helper's Hack Club avatar.
+    Requires the chat:write.customize scope; callers fall back if it errors."""
+    return {
+        "username": f"《{real_name(user_id)}》| {SUPPORT_TEAM_NAME} Support Team",
+        "icon_url": f"https://cachet.hackclub.com/users/{user_id}/r",
+    }
+
+
+def _post_to_user(client, channel: str, thread_ts: str, text: str, helper_id: str):
+    """Relay a message to a user, posted with the helper's own name and PFP.
+    Falls back to the default bot identity if Slack rejects the override."""
+    try:
+        return client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=text,
+            **_support_identity(helper_id),
+        )
+    except Exception as e:
+        logging.debug("Custom identity rejected for %s (%s); using default bot identity", helper_id, e)
+        return client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=text)
 
 
 def _support_note(client, ticket, text: str) -> None:
@@ -132,6 +163,80 @@ def update_stats(client) -> None:
     _refresh_stats(client)
 
 
+def summarize_and_log(client, ticket) -> None:
+    """On ticket close: ask the AI for a concise Q&A summary, store it in the
+    DB (for future similar-question checks) and append it to the support
+    canvas for humans to browse. Never raises — it's best-effort."""
+    try:
+        question = ticket["original_text"] or ""
+        answers = [r["text"] for r in db.get_replies_for_ticket(ticket["id"])]
+        summary = ai.summarize_conversation(real_name(ticket["user_id"]), question, answers)
+        if not summary:
+            return
+        db.create_summary(question, summary)
+        canvas_id = canvas.resolve_canvas(client, SUPPORT_CHANNEL_ID)
+        if canvas_id:
+            markdown = (
+                f"### {time.strftime('%Y-%m-%d %H:%M')}\n"
+                f"**User:** {real_name(ticket['user_id'])}\n"
+                f"**Q:** {question}\n"
+                f"**A:** {summary}"
+            )
+            canvas.append_summary(client, canvas_id, markdown)
+    except Exception:
+        logging.exception("Couldn't summarize resolved ticket")
+
+
+def maybe_suggest(client, payload: dict, support_ts: str) -> None:
+    """On ticket open: ask the AI whether a similar question was resolved
+    before. If so, post a one-click suggestion in the ticket's support thread."""
+    try:
+        past = db.list_summaries(limit=ai.AI_MAX_RECENT)
+        match = ai.find_similar(payload["text"], past)
+        if not match:
+            return
+        value = json.dumps(
+            {
+                "dm_channel": payload["dm_channel"],
+                "dm_ts": payload["dm_ts"],
+                "support_ts": support_ts,
+                "text": match["suggested_reply"],
+            }
+        )
+        client.chat_postMessage(
+            channel=SUPPORT_CHANNEL_ID,
+            thread_ts=support_ts,
+            text="A similar question to this one was already resolved — want to send the AI-suggested reply?",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f":bulb: *Similar to a past ticket*\n"
+                            f"> *They said (before):* {match['matched_question']}\n"
+                            f"> *AI-suggested reply:* {match['suggested_reply']}"
+                        ),
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Send to user"},
+                            "style": "primary",
+                            "action_id": "send_ai_reply",
+                            "value": value,
+                        }
+                    ],
+                },
+            ],
+        )
+    except Exception:
+        logging.exception("Couldn't check for similar past questions")
+
+
 @app.event("message")
 def handle_message(event, client, logger):
     # Ignore the bot's own messages, edits, joins, etc.
@@ -162,6 +267,7 @@ def handle_message(event, client, logger):
                 thread_ts=ticket["support_ts"],
                 text=f"*{real_name(user_id)}* (<@{user_id}>):\n{quoted_text}",
             )
+            media.upload_files(client, SUPPORT_CHANNEL_ID, ticket["support_ts"], event.get("files"), BOT_TOKEN)
             client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
             return
 
@@ -190,6 +296,7 @@ def handle_message(event, client, logger):
                                     "dm_ts": ts,
                                     "user_id": user_id,
                                     "text": text,
+                                    "files": event.get("files", []),
                                 }
                             ),
                         },
@@ -231,6 +338,7 @@ def handle_message(event, client, logger):
 
         # `?close` resolves the ticket without relaying anything to the user.
         if reply_text.lower() == "close":
+            summarize_and_log(client, ticket)
             _close_ticket(client, ticket)
             return
 
@@ -245,12 +353,23 @@ def handle_message(event, client, logger):
                 text=f"sent macro `{macro_name}` to <@{ticket['user_id']}>. the macro says: `{macro_text}`",
             )
 
-        sent = client.chat_postMessage(
-            channel=ticket["dm_channel"],
-            thread_ts=ticket["dm_ts"],
-            text=f"{reply_text}\n\n_— <@{user_id}>, {signature_role(user_id)}_",
-        )
-        db.create_reply(ts, ticket["id"], ticket["dm_channel"], sent["ts"], user_id, reply_text)
+        ticket_thread = ticket["dm_ts"]
+        if reply_text:
+            sent = _post_to_user(
+                client,
+                ticket["dm_channel"],
+                ticket_thread,
+                f"{reply_text}\n\n_— <@{user_id}>, {signature_role(user_id)}_",
+                user_id,
+            )
+        else:
+            sent = None
+
+        uploaded = media.upload_files(client, ticket["dm_channel"], ticket_thread, event.get("files"), BOT_TOKEN)
+        tracked_ts = sent["ts"] if sent else (uploaded[-1]["ts"] if uploaded else None)
+        if tracked_ts is None:
+            return  # empty `?` with nothing attached
+        db.create_reply(ts, ticket["id"], ticket["dm_channel"], tracked_ts, user_id, reply_text)
         client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
 
 
@@ -269,6 +388,7 @@ def handle_confirm(ack, body, client):
         text=f"*{real_name(user_id)}* (<@{user_id}>):\n{quoted_text}",
     )
     db.create_ticket(posted["ts"], dm_channel, dm_ts, user_id, original_text)
+    media.upload_files(client, SUPPORT_CHANNEL_ID, posted["ts"], payload.get("files"), BOT_TOKEN)
 
     client.reactions_remove(channel=dm_channel, timestamp=dm_ts, name="eyes")
     client.reactions_add(channel=dm_channel, timestamp=dm_ts, name="white_check_mark")
@@ -281,6 +401,7 @@ def handle_confirm(ack, body, client):
     )
 
     update_stats(client)
+    maybe_suggest(client, payload, posted["ts"])
 
 
 @app.action("cancel_send_support")
@@ -292,6 +413,24 @@ def handle_cancel(ack, body, client):
         text="No worries — not sent.",
         blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": "No worries — not sent."}}],
     )
+
+
+@app.action("send_ai_reply")
+def handle_send_ai_reply(ack, body, client):
+    """The button on an AI suggestion: relay the suggested text to the user as
+    a normal signed reply, from the helper who clicked it."""
+    ack()
+    payload = json.loads(body["actions"][0]["value"])
+    helper_id = body["user"]["id"]
+    button_ts = body["message"]["ts"]
+
+    sent_text = f"{payload['text']}\n\n_— <@{helper_id}>, {signature_role(helper_id)}_"
+    sent = _post_to_user(client, payload["dm_channel"], payload["dm_ts"], sent_text, helper_id)
+    ticket = db.get_ticket_by_support_ts(payload["support_ts"])
+    if ticket is not None:
+        db.create_reply(button_ts, ticket["id"], payload["dm_channel"], sent["ts"], helper_id, payload["text"])
+        _support_note(client, ticket, f"AI-suggested reply sent to user by <@{helper_id}>.")
+    client.reactions_add(channel=SUPPORT_CHANNEL_ID, timestamp=button_ts, name="white_check_mark")
 
 
 def _can_manage_reply(user_id: str, reply) -> bool:

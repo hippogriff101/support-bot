@@ -79,6 +79,20 @@ def init_db(path: str = DB_PATH) -> None:
         )
         conn.commit()
 
+        # Summaries of resolved tickets, used for the "similar question" AI
+        # suggestion and mirrored into the support canvas for humans to browse.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+
 
 def create_ticket(
     support_ts: str,
@@ -138,6 +152,31 @@ def get_reply_by_support_ts(support_reply_ts: str, path: str = DB_PATH):
         conn.row_factory = sqlite3.Row
         cur = conn.execute("SELECT * FROM replies WHERE support_reply_ts = ?", (support_reply_ts,))
         return cur.fetchone()
+
+
+def get_replies_for_ticket(ticket_id: int, path: str = DB_PATH) -> list:
+    """All non-deleted replies relayed to a ticket's user, oldest first."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT * FROM replies WHERE ticket_id = ? AND deleted = 0 ORDER BY id ASC",
+            (ticket_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def create_summary(question: str, summary: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("INSERT INTO summaries (question, summary) VALUES (?, ?)", (question, summary))
+        conn.commit()
+
+
+def list_summaries(limit: int = 50, path: str = DB_PATH) -> list:
+    """Resolved-ticket summaries, newest first — the AI's memory of similar questions."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("SELECT question, summary FROM summaries ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(row) for row in cur.fetchall()]
 
 
 def update_reply_text(support_reply_ts: str, text: str, path: str = DB_PATH) -> None:

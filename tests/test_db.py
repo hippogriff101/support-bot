@@ -39,16 +39,38 @@ def test_reply_lifecycle(tmp_path):
     ticket = db.get_ticket_by_support_ts("support_ts_1", path=path)
 
     db.create_reply("reply_ts_1", ticket["id"], "D123", "dm_reply_ts_1", "U_helper", "here you go", path=path)
+    db.create_reply("reply_ts_2", ticket["id"], "D123", "dm_reply_ts_2", "U_helper", "and this", path=path)
 
-    reply = db.get_reply_by_support_ts("reply_ts_1", path=path)
-    assert reply["text"] == "here you go"
-    assert reply["deleted"] == 0
-
-    db.update_reply_text("reply_ts_1", "updated text", path=path)
-    assert db.get_reply_by_support_ts("reply_ts_1", path=path)["text"] == "updated text"
+    replies = db.get_replies_for_ticket(ticket["id"], path=path)
+    assert [r["text"] for r in replies] == ["here you go", "and this"]
 
     db.mark_reply_deleted("reply_ts_1", path=path)
-    assert db.get_reply_by_support_ts("reply_ts_1", path=path)["deleted"] == 1
+    replies = db.get_replies_for_ticket(ticket["id"], path=path)
+    assert [r["text"] for r in replies] == ["and this"]
+
+    reply = db.get_reply_by_support_ts("reply_ts_2", path=path)
+    assert reply["deleted"] == 0
+
+    db.update_reply_text("reply_ts_2", "updated text", path=path)
+    assert db.get_reply_by_support_ts("reply_ts_2", path=path)["text"] == "updated text"
+
+    db.mark_reply_deleted("reply_ts_2", path=path)
+    assert db.get_reply_by_support_ts("reply_ts_2", path=path)["deleted"] == 1
+
+
+def test_summary_lifecycle(tmp_path):
+    path = str(tmp_path / "tickets.db")
+    db.init_db(path)
+
+    db.create_summary("i can't log in", "Reset the password.", path=path)
+    db.create_summary("how do i submit?", "Pointed them at the submit page.", path=path)
+
+    newest_first = db.list_summaries(limit=50, path=path)
+    assert [s["question"] for s in newest_first] == ["how do i submit?", "i can't log in"]
+
+    limited = db.list_summaries(limit=1, path=path)
+    assert len(limited) == 1
+    assert limited[0]["question"] == "how do i submit?"
 
 
 def test_settings_roundtrip(tmp_path):
