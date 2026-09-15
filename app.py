@@ -237,7 +237,13 @@ def handle_message(event, client, logger):
         _reopen_ticket(client, ticket)
         macro_text = macros.get_macro(reply_text)
         if macro_text is not None:
+            macro_name = reply_text
             reply_text = macro_text
+            client.chat_postMessage(
+                channel=SUPPORT_CHANNEL_ID,
+                thread_ts=ticket["support_ts"],
+                text=f"sent macro `{macro_name}` to <@{ticket['user_id']}>. the macro says: `{macro_text}`",
+            )
 
         sent = client.chat_postMessage(
             channel=ticket["dm_channel"],
