@@ -206,7 +206,6 @@ def handle_message(event, client, logger):
                                     "dm_ts": ts,
                                     "user_id": user_id,
                                     "text": text,
-                                    "files": event.get("files", []),
                                 }
                             ),
                         },
@@ -280,7 +279,7 @@ def handle_message(event, client, logger):
             sent = None
 
         uploaded = media.upload_files(client, ticket["dm_channel"], ticket_thread, event.get("files"), BOT_TOKEN)
-        tracked_ts = sent["ts"] if sent else (uploaded[-1]["ts"] if uploaded else None)
+        tracked_ts = sent["ts"] if sent else (uploaded[0] if uploaded else None)
         if tracked_ts is None:
             return  # empty `?` with nothing attached
         db.create_reply(ts, ticket["id"], ticket["dm_channel"], tracked_ts, user_id, reply_text)
@@ -304,7 +303,12 @@ def handle_confirm(ack, body, client):
         icon_url=avatar_url(user_id),
     )
     db.create_ticket(posted["ts"], dm_channel, dm_ts, user_id, original_text)
-    media.upload_files(client, SUPPORT_CHANNEL_ID, posted["ts"], payload.get("files"), BOT_TOKEN)
+
+    # Attachments can't ride in the button payload (2,000-char limit), so pull
+    # them from the user's original message once they've confirmed.
+    source = client.conversations_history(channel=dm_channel, latest=dm_ts, inclusive=True, limit=1)
+    source_files = source["messages"][0].get("files") if source.get("messages") else None
+    media.upload_files(client, SUPPORT_CHANNEL_ID, posted["ts"], source_files, BOT_TOKEN)
 
     client.reactions_remove(channel=dm_channel, timestamp=dm_ts, name="eyes")
     client.reactions_add(channel=dm_channel, timestamp=dm_ts, name="white_check_mark")

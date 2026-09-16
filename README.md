@@ -14,7 +14,8 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
 
 - **Socket Mode**: turn it on, create an app-level token with the
   `connections:write` scope → that's `SLACK_APP_TOKEN`.
-- **Bot Token Scopes**: `chat:write`, `chat:write.customize`, `files:write`,
+- **Bot Token Scopes**: `chat:write`, `chat:write.customize`, `files:read`,
+  `files:write`,
   `im:history`, `im:read`, `groups:history` (use `channels:history` instead if your
   support channel is public), `reactions:write`, `users:read`, `commands`.
   `chat:write.customize` lets the bot post a helper's/user's own name and
@@ -136,10 +137,12 @@ posted, so an edited reply keeps showing whoever sent the original.
   that person the way a real message from them would. The text signature
   (helper's mention + role in DMs, the `*Name* (@user):` line in the
   support thread) stays as the actual source of truth for who sent what.
-- Image relay uses `files:write`: the bot downloads each attachment with
-  its own token and re-uploads it into the destination channel/thread.
-  Files over 25 MB are skipped, and a single unreadable file never breaks
-  the relay (it's logged and the rest still go through).
+- Image relay uses `files:read` (download the source file) + `files:write`
+  (re-upload it): the bot downloads each attachment with its own token and
+  re-uploads it into the destination channel/thread. Files over 25 MB are
+  skipped (and the download stream is cut off at the cap), and a single
+  unreadable file never breaks the relay (it's logged and the rest still go
+  through).
 - A user can open multiple tickets — each gets its own DM/support thread.
 - In-flight "Yes/No" confirmation buttons don't survive a bot restart
   (open tickets do, via SQLite).
