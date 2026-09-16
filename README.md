@@ -14,8 +14,8 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
 
 - **Socket Mode**: turn it on, create an app-level token with the
   `connections:write` scope → that's `SLACK_APP_TOKEN`.
-- **Bot Token Scopes**: `chat:write`, `chat:write.customize`, `im:history`,
-  `im:read`, `groups:history` (use `channels:history` instead if your
+- **Bot Token Scopes**: `chat:write`, `chat:write.customize`, `files:write`,
+  `im:history`, `im:read`, `groups:history` (use `channels:history` instead if your
   support channel is public), `reactions:write`, `users:read`, `commands`.
   `chat:write.customize` lets the bot post a helper's/user's own name and
   profile picture on relayed messages instead of the bot's — if you add
@@ -88,6 +88,11 @@ actually came back up.
   `— @Helper, Clubs Team`), falling back to `{EVENT_NAME} Support` if they
   somehow don't have one set. `?macro-name` sends that macro's canned text
   instead. Only users in `helpers.json` can do this.
+- **Attachments travel both ways.** A photo/file a user sends lands in the
+  ticket's support thread; a helper's `?` reply with a photo/file forwards
+  it to the user. A bare `?` with just an image (no text) still relays the
+  image. Files are re-uploaded with the bot's token — nothing is made
+  public.
 - `?close` resolves a ticket (tick reaction, helper-only note, no DM to the
   user). Any new activity — the user replying, or another `?` reply —
   reopens it.
@@ -131,6 +136,10 @@ posted, so an edited reply keeps showing whoever sent the original.
   that person the way a real message from them would. The text signature
   (helper's mention + role in DMs, the `*Name* (@user):` line in the
   support thread) stays as the actual source of truth for who sent what.
+- Image relay uses `files:write`: the bot downloads each attachment with
+  its own token and re-uploads it into the destination channel/thread.
+  Files over 25 MB are skipped, and a single unreadable file never breaks
+  the relay (it's logged and the rest still go through).
 - A user can open multiple tickets — each gets its own DM/support thread.
 - In-flight "Yes/No" confirmation buttons don't survive a bot restart
   (open tickets do, via SQLite).

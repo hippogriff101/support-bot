@@ -10,11 +10,13 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 import db
 import helpers
 import macros
+import media
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 SUPPORT_CHANNEL_ID = os.environ["SUPPORT_CHANNEL_ID"]
+BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 EVENT_NAME = os.environ.get("EVENT_NAME", "Event")
 
 STATS_SETTING = "anchored_stats_ts"
@@ -175,6 +177,7 @@ def handle_message(event, client, logger):
                 username=real_name(user_id),
                 icon_url=avatar_url(user_id),
             )
+            media.upload_files(client, SUPPORT_CHANNEL_ID, ticket["support_ts"], event.get("files"), BOT_TOKEN)
             client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
             return
 
@@ -203,6 +206,7 @@ def handle_message(event, client, logger):
                                     "dm_ts": ts,
                                     "user_id": user_id,
                                     "text": text,
+                                    "files": event.get("files", []),
                                 }
                             ),
                         },
@@ -263,14 +267,23 @@ def handle_message(event, client, logger):
                 text=f"sent macro `{macro_name}` to <@{ticket['user_id']}>. the macro says: `{macro_text}`",
             )
 
-        sent = client.chat_postMessage(
-            channel=ticket["dm_channel"],
-            thread_ts=ticket["dm_ts"],
-            text=f"{reply_text}\n\n_— <@{user_id}>, {signature_role(user_id)}_",
-            username=real_name(user_id),
-            icon_url=avatar_url(user_id),
-        )
-        db.create_reply(ts, ticket["id"], ticket["dm_channel"], sent["ts"], user_id, reply_text)
+        ticket_thread = ticket["dm_ts"]
+        if reply_text:
+            sent = client.chat_postMessage(
+                channel=ticket["dm_channel"],
+                thread_ts=ticket_thread,
+                text=f"{reply_text}\n\n_— <@{user_id}>, {signature_role(user_id)}_",
+                username=real_name(user_id),
+                icon_url=avatar_url(user_id),
+            )
+        else:
+            sent = None
+
+        uploaded = media.upload_files(client, ticket["dm_channel"], ticket_thread, event.get("files"), BOT_TOKEN)
+        tracked_ts = sent["ts"] if sent else (uploaded[-1]["ts"] if uploaded else None)
+        if tracked_ts is None:
+            return  # empty `?` with nothing attached
+        db.create_reply(ts, ticket["id"], ticket["dm_channel"], tracked_ts, user_id, reply_text)
         client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
 
 
@@ -291,6 +304,7 @@ def handle_confirm(ack, body, client):
         icon_url=avatar_url(user_id),
     )
     db.create_ticket(posted["ts"], dm_channel, dm_ts, user_id, original_text)
+    media.upload_files(client, SUPPORT_CHANNEL_ID, posted["ts"], payload.get("files"), BOT_TOKEN)
 
     client.reactions_remove(channel=dm_channel, timestamp=dm_ts, name="eyes")
     client.reactions_add(channel=dm_channel, timestamp=dm_ts, name="white_check_mark")
