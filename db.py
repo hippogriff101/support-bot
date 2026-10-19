@@ -109,6 +109,25 @@ def init_db(path: str = DB_PATH) -> None:
         if "nudged_at" not in cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN nudged_at TEXT")
             conn.commit()
+        if "support_text" not in cols:
+            # Left NULL for older tickets — app.py reads it back from Slack
+            # the first time it needs to re-render one.
+            conn.execute("ALTER TABLE tickets ADD COLUMN support_text TEXT")
+            conn.commit()
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dm_channel TEXT NOT NULL,
+                dm_ts TEXT NOT NULL,
+                ticket_id INTEGER NOT NULL,
+                support_copy_ts TEXT NOT NULL,
+                UNIQUE (dm_channel, dm_ts)
+            )
+            """
+        )
+        conn.commit()
 
 
 def create_ticket(
@@ -117,17 +136,72 @@ def create_ticket(
     dm_ts: str,
     user_id: str,
     original_text: str,
+    support_text: str | None = None,
     path: str = DB_PATH,
 ) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.execute(
             """
-            INSERT INTO tickets (support_ts, dm_channel, dm_ts, user_id, original_text, last_user_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO tickets (support_ts, dm_channel, dm_ts, user_id, original_text, support_text, last_user_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
-            (support_ts, dm_channel, dm_ts, user_id, original_text),
+            (support_ts, dm_channel, dm_ts, user_id, original_text, support_text),
         )
         conn.commit()
+
+
+def set_ticket_text(support_ts: str, support_text: str, original_text: str | None = None, path: str = DB_PATH):
+    """Store the forwarded message's rendered text (and, after the user
+    edits their original DM, the new original text)."""
+    with closing(sqlite3.connect(path)) as conn:
+        if original_text is None:
+            conn.execute("UPDATE tickets SET support_text = ? WHERE support_ts = ?", (support_text, support_ts))
+        else:
+            conn.execute(
+                "UPDATE tickets SET support_text = ?, original_text = ? WHERE support_ts = ?",
+                (support_text, original_text, support_ts),
+            )
+        conn.commit()
+
+
+def all_tickets(path: str = DB_PATH) -> list:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT * FROM tickets ORDER BY id").fetchall()
+
+
+def create_user_message(dm_channel: str, dm_ts: str, ticket_id: int, support_copy_ts: str, path: str = DB_PATH):
+    """Remember where a user's follow-up DM was copied to in the support
+    thread, so an edit/delete of it can be mirrored there."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO user_messages (dm_channel, dm_ts, ticket_id, support_copy_ts) VALUES (?, ?, ?, ?)",
+            (dm_channel, dm_ts, ticket_id, support_copy_ts),
+        )
+        conn.commit()
+
+
+def get_user_message(dm_channel: str, dm_ts: str, path: str = DB_PATH):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT user_messages.*, tickets.support_ts, tickets.user_id FROM user_messages "
+            "JOIN tickets ON tickets.id = user_messages.ticket_id "
+            "WHERE user_messages.dm_channel = ? AND user_messages.dm_ts = ?",
+            (dm_channel, dm_ts),
+        ).fetchone()
+
+
+def delete_user_message(dm_channel: str, dm_ts: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("DELETE FROM user_messages WHERE dm_channel = ? AND dm_ts = ?", (dm_channel, dm_ts))
+        conn.commit()
+
+
+def get_ticket_by_id(ticket_id: int, path: str = DB_PATH):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
 
 
 def get_ticket_by_support_ts(support_ts: str, path: str = DB_PATH):
