@@ -60,6 +60,17 @@ def add_macro(name: str, text: str) -> None:
     _save(data)
 
 
+def delete_macro(name: str) -> bool:
+    data = _load()
+    name = name.strip().lower()
+    match = next((key for key in data if key.strip().lower() == name), None)
+    if match is None:
+        return False
+    del data[match]
+    _save(data)
+    return True
+
+
 def bootstrap_defaults(defaults: dict = DEFAULT_MACROS) -> None:
     """Seed the given defaults into the macros file if it's currently empty
     — a no-op once anything has been saved to it. Needed on hosts where

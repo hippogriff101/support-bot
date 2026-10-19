@@ -24,7 +24,7 @@ jobs:
           pip install ruff pytest
 
       - name: Syntax check
-        run: python -m py_compile app.py db.py helpers.py macros.py
+        run: python -m py_compile app.py attachments.py config.py db.py helpers.py home.py macros.py
 
       - name: Lint (ruff check)
         run: ruff check .

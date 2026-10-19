@@ -15,6 +15,13 @@ DM/thread:
                    doesn't gate who else can reply)
     resolved_by -> helper who last ran `?close` on it, if any; only
                    meaningful while status is 'closed'
+    last_user_at   -> when the user last said something (ticket creation or
+                      a follow-up in their DM thread)
+    last_helper_at -> when a helper last relayed a reply to the user. A
+                      ticket is "unanswered" while this is older than
+                      last_user_at (or unset)
+    nudged_at      -> when the nudge persona last pinged the support
+                      channel about this ticket going unanswered
 
 A "reply" is one helper message relayed into a user's DM. We track the ts
 of both copies so a message shortcut on the helper's "?" message in the
@@ -60,18 +67,6 @@ def init_db(path: str = DB_PATH) -> None:
         )
         conn.commit()
 
-        # Migrate pre-existing DBs that lack columns added later.
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(tickets)")}
-        if "status" not in cols:
-            conn.execute("ALTER TABLE tickets ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")
-            conn.commit()
-        if "claimed_by" not in cols:
-            conn.execute("ALTER TABLE tickets ADD COLUMN claimed_by TEXT")
-            conn.commit()
-        if "resolved_by" not in cols:
-            conn.execute("ALTER TABLE tickets ADD COLUMN resolved_by TEXT")
-            conn.commit()
-
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS replies (
@@ -89,6 +84,32 @@ def init_db(path: str = DB_PATH) -> None:
         )
         conn.commit()
 
+        # Migrate pre-existing DBs that lack columns added later.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(tickets)")}
+        if "status" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")
+            conn.commit()
+        if "claimed_by" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN claimed_by TEXT")
+            conn.commit()
+        if "resolved_by" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN resolved_by TEXT")
+            conn.commit()
+        if "last_user_at" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN last_user_at TEXT")
+            conn.execute("UPDATE tickets SET last_user_at = created_at")
+            conn.commit()
+        if "last_helper_at" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN last_helper_at TEXT")
+            conn.execute(
+                "UPDATE tickets SET last_helper_at = "
+                "(SELECT MAX(created_at) FROM replies WHERE replies.ticket_id = tickets.id AND deleted = 0)"
+            )
+            conn.commit()
+        if "nudged_at" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN nudged_at TEXT")
+            conn.commit()
+
 
 def create_ticket(
     support_ts: str,
@@ -101,8 +122,8 @@ def create_ticket(
     with closing(sqlite3.connect(path)) as conn:
         conn.execute(
             """
-            INSERT INTO tickets (support_ts, dm_channel, dm_ts, user_id, original_text)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO tickets (support_ts, dm_channel, dm_ts, user_id, original_text, last_user_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (support_ts, dm_channel, dm_ts, user_id, original_text),
         )
@@ -177,6 +198,77 @@ def set_ticket_status(support_ts: str, status: str, resolved_by: str | None = No
 def set_ticket_claim(support_ts: str, user_id: str, path: str = DB_PATH) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("UPDATE tickets SET claimed_by = ? WHERE support_ts = ?", (user_id, support_ts))
+        conn.commit()
+
+
+def clear_ticket_claim(support_ts: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE tickets SET claimed_by = NULL WHERE support_ts = ?", (support_ts,))
+        conn.commit()
+
+
+def touch_user_activity(support_ts: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE tickets SET last_user_at = CURRENT_TIMESTAMP WHERE support_ts = ?", (support_ts,))
+        conn.commit()
+
+
+def touch_helper_activity(support_ts: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE tickets SET last_helper_at = CURRENT_TIMESTAMP WHERE support_ts = ?", (support_ts,))
+        conn.commit()
+
+
+# An open ticket whose user's latest message hasn't had a helper reply since.
+_UNANSWERED = "status = 'open' AND (last_helper_at IS NULL OR last_helper_at < COALESCE(last_user_at, created_at))"
+
+
+def _days_ago(days: float) -> str:
+    """A SQLite datetime() modifier for `days` ago — seconds so fractional
+    days (e.g. 0.5) work."""
+    return f"-{int(days * 86400)} seconds"
+
+
+def list_unanswered(min_age_days: float = 0, limit: int | None = None, path: str = DB_PATH) -> list:
+    """Unanswered tickets, longest-waiting first, optionally only those
+    waiting at least `min_age_days`."""
+    query = (
+        f"SELECT * FROM tickets WHERE {_UNANSWERED} "
+        "AND COALESCE(last_user_at, created_at) <= datetime('now', ?) "
+        "ORDER BY COALESCE(last_user_at, created_at) ASC"
+    )
+    params: tuple = (_days_ago(min_age_days),)
+    if limit is not None:
+        query += " LIMIT ?"
+        params += (limit,)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(query, params).fetchall()
+
+
+def count_unanswered(path: str = DB_PATH) -> int:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM tickets WHERE {_UNANSWERED}").fetchone()[0]
+
+
+def list_due_nudges(days: float, path: str = DB_PATH) -> list:
+    """Tickets unanswered for at least `days` that haven't been nudged in the
+    last `days` either — so each stays quiet for a full period between
+    nudges instead of re-pinging on every check."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            f"SELECT * FROM tickets WHERE {_UNANSWERED} "
+            "AND COALESCE(last_user_at, created_at) <= datetime('now', ?1) "
+            "AND (nudged_at IS NULL OR nudged_at <= datetime('now', ?1)) "
+            "ORDER BY COALESCE(last_user_at, created_at) ASC",
+            (_days_ago(days),),
+        ).fetchall()
+
+
+def mark_nudged(support_ts: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE tickets SET nudged_at = CURRENT_TIMESTAMP WHERE support_ts = ?", (support_ts,))
         conn.commit()
 
 

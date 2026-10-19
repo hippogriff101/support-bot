@@ -16,15 +16,17 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
   `connections:write` scope → that's `SLACK_APP_TOKEN`.
 - **Bot Token Scopes**: `chat:write`, `chat:write.customize`, `im:history`,
   `im:read`, `groups:history` (use `channels:history` instead if your
-  support channel is public), `reactions:write`, `users:read`, `commands`.
+  support channel is public), `reactions:write`, `users:read`, `commands`,
+  `files:read`, `files:write`.
   `chat:write.customize` lets the bot post a helper's/user's own name and
   profile picture on relayed messages instead of the bot's — if you add
   this scope to an already-installed app, reinstall it to the workspace to
-  pick up the new permission.
+  pick up the new permission. `files:read`/`files:write` are what let the
+  bot copy attachments between the user's DM and the support thread.
 - **Event Subscriptions**: `message.im`, `message.groups` (or
   `message.channels` if public), `app_home_opened`.
 - **App Home**: turn on the **Home Tab** (Messages Tab can stay off) — this
-  is what makes the stats page in [How it behaves](#how-it-behaves) show up.
+  is where first-time setup, the stats page and the admin dashboard live.
 - **Interactivity & Shortcuts**: turn it on, add two "On messages" shortcuts
   — **Edit reply** (`edit_reply`) and **Delete reply** (`delete_reply`).
 - **Slash Commands**: add `/support`.
@@ -37,21 +39,38 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
 cp .env.example .env
 ```
 
-Fill in `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SUPPORT_CHANNEL_ID`, and
-`EVENT_NAME`.
+Only `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are required. Everything else
+(support channel, event name, nudges) can live in `.env` *or* be set by an
+admin from the bot's **Home tab → Settings** — a value saved there wins over
+`.env`, so you can change it mid-event without a redeploy.
 
-Add at least one admin to `helpers.json` (git-ignored — real roster data):
+### First admin
+
+The easy way: start the bot, then open its **Home tab** in Slack. While
+nobody's an admin it shows **Set up the bot** — click it and enter the
+one-time setup code from the bot's logs:
+
+```
+WARNING:root:No admins yet — open the bot's Home tab in Slack, click 'Set up the bot' and enter setup code: 1a2b3c4d
+```
+
+You're now an admin and it drops you straight into Settings (pick the
+support channel there — invite the bot to it first). The code only lives in
+the logs so that being first to open the Home tab isn't enough to grab admin
+in a big workspace.
+
+Alternatively, set `INITIAL_ADMIN_ID` (seeds that one admin on startup if
+the roster's empty), or hand-write `helpers.json` (git-ignored — real roster
+data):
 
 ```json
 { "U0123ABCDEF": { "role": "Event Support", "admin": true } }
 ```
 
-No filesystem access before the first deploy (e.g. Orchard)? Set
-`INITIAL_ADMIN_ID` instead — it seeds that one admin on startup if the
-roster's empty. Use `/support promote` from there to add everyone else.
+Add everyone else from the Home tab's admin dashboard or `/support promote`.
 
 `macros.json` ships in the repo with a few generic starter canned replies —
-edit by hand or manage live with `/support macros <name> <reply text>`.
+manage them from the Home tab, with `/support macros`, or by hand.
 
 ## 3. Run
 
@@ -78,7 +97,15 @@ actually came back up.
 ## How it behaves
 
 - DM the bot → 👀 reaction → "send to support?" prompt. Confirming forwards
-  it to the support channel and marks the DM ✅.
+  it to the support channel and marks the DM ✅. The forwarded message has
+  **Claim** and **Resolve** buttons (same as `?claim` / `?close`).
+- **Attachments** move both ways: files a user sends (in the first message
+  or a follow-up) are copied into the ticket's support thread, and files a
+  helper attaches to a `?` reply are copied into the user's DM thread (a
+  bare `?` with files just sends the files). Copies are uploaded by the bot
+  itself — Slack doesn't allow a custom name/photo on file uploads — so the
+  message next to them is what says who sent them. Anything that fails to
+  copy gets a note in the support thread.
 - Once a ticket exists, further replies in that DM thread relay straight
   into the ticket's thread — posted under the user's own Slack name/photo
   (the opening `*Name* (@user):` line stays too) — no repeat prompt.
@@ -94,27 +121,44 @@ actually came back up.
 - `?claim` in a ticket thread records which helper is handling it — a
   helper-only note in the thread, nothing to the user, and it doesn't stop
   anyone else from replying (see [Notes](#notes)). Purely for stats/context.
+  `?unclaim` lets it go again.
+- **Unanswered tickets**: a ticket is "waiting" while it's open and the
+  user's latest message hasn't had a `?` reply since. `/support unanswered`
+  and the Home tab list them longest-waiting first, with links.
+- **Nudges**: once a ticket's been waiting `STALE_DAYS` (default 2, set in
+  `.env` or Home → Settings), the bot posts in its thread *and* to the
+  channel as **Chopsticks** 🥢 (name/icon configurable), pinging whoever
+  claimed it. It checks every 10 minutes and won't nudge the same ticket
+  again until another full period has passed.
 - A pinned **Support stats** message in the support channel tracks Open vs
   Resolved counts.
-- The bot's **Home tab** (click its name/icon in Slack) shows a live stats
-  page: anyone who isn't a helper just sees a "DM me for help" notice.
-  Helpers see the same Open/Resolved counts plus a per-helper reply-count
-  leaderboard. Admins additionally see each helper's resolved-ticket count,
-  total people who've DM'd the bot, total tickets all-time, and tickets
-  opened today.
+- The bot's **Home tab** (click its name/icon in Slack): anyone who isn't
+  a helper just sees a "DM me for help" notice. Helpers see Open/Resolved
+  counts, the unanswered queue and a per-helper reply-count leaderboard.
+  Admins get the **admin dashboard** on top of that: each helper's resolved
+  count, org-wide numbers, **Settings** (support channel, event name, nudge
+  timing/name/icon), and add/edit/remove for **helpers** and **macros**.
 
 ### Commands
 
+`/support` (or `/support help`) lists everything.
+
 - `/support whoami` — see your own role.
 - `/support list` — helpers only: list the roster.
-- `/support macros [name] [reply text]` — list macros, or (admins) add/update one.
+- `/support unanswered` — helpers only: open tickets still waiting on a
+  reply, longest first.
+- `/support macros` (or `/support macros list`) — helpers only: every macro
+  and its full text.
+- `/support macros <name> <reply text>` — admins only: add/update a macro.
+- `/support macros delete <name>` — admins only: delete a macro.
+- `/support config` — admins only: open the Settings modal.
 - `/support promote @user [role]` — admins only: add/update a helper. Role
   defaults to `{EVENT_NAME} Support` if omitted; never demotes an existing
   admin.
 - `/support superpromote @user [role]` — admins only: same as `promote`, but
   also grants admin.
 - `/support demote @user` — admins only: remove someone from the roster
-  entirely.
+  entirely. Refuses to remove the last admin.
 
 ### Message shortcuts
 
@@ -132,8 +176,12 @@ posted, so an edited reply keeps showing whoever sent the original.
   (helper's mention + role in DMs, the `*Name* (@user):` line in the
   support thread) stays as the actual source of truth for who sent what.
 - A user can open multiple tickets — each gets its own DM/support thread.
-- In-flight "Yes/No" confirmation buttons don't survive a bot restart
-  (open tickets do, via SQLite).
+- The "send to support?" prompt re-reads the user's message when they
+  confirm, so long messages and attachments forward fine, and a double-click
+  doesn't open two tickets.
+- Changing the support channel mid-event moves the stats message over, but
+  open tickets stay in the old channel's threads — helper replies there
+  won't relay any more, so finish them off first.
 - `?claim` is informational only, not enforcement — any helper can still
   answer any ticket even after someone else claims it. It exists so stats
   can attribute a ticket to whoever's handling it, not to gate replies.
