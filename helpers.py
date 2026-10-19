@@ -50,6 +50,24 @@ def add_helper(user_id: str, role: str, admin: bool = False) -> None:
     _save(data)
 
 
+def set_helper(user_id: str, role: str, admin: bool) -> None:
+    """Set a helper's role and admin flag exactly — unlike add_helper(), this
+    can demote an admin. Used by the Home tab's edit form."""
+    data = _load()
+    data[user_id] = {"role": role, "admin": admin}
+    _save(data)
+
+
+def admin_count() -> int:
+    return sum(1 for info in _load().values() if info.get("admin"))
+
+
+def is_last_admin(user_id: str) -> bool:
+    """True if removing/demoting this user would leave nobody able to manage
+    the bot."""
+    return is_admin(user_id) and admin_count() == 1
+
+
 def remove_helper(user_id: str) -> bool:
     data = _load()
     if user_id not in data:
