@@ -259,3 +259,25 @@ def test_modals_build(isolated_state):
     assert home.macro_modal("review")["blocks"][1]["element"]["initial_value"].startswith("Hi!")
     admin_box = home.helper_modal("U_admin")["blocks"][2]["element"]
     assert admin_box["initial_options"] == admin_box["options"]
+
+
+def test_ticket_text_and_user_messages(tmp_path):
+    path = str(tmp_path / "tickets.db")
+    db.init_db(path)
+    db.create_ticket("s1", "D1", "d1", "U1", "hi", support_text="*Sam*:\n> hi", path=path)
+    db.create_ticket("s2", "D2", "d2", "U2", "legacy", path=path)
+    assert db.get_ticket_by_support_ts("s1", path=path)["support_text"] == "*Sam*:\n> hi"
+    assert db.get_ticket_by_support_ts("s2", path=path)["support_text"] is None
+
+    db.set_ticket_text("s1", "*Sam*:\n> hello", original_text="hello", path=path)
+    ticket = db.get_ticket_by_support_ts("s1", path=path)
+    assert (ticket["support_text"], ticket["original_text"]) == ("*Sam*:\n> hello", "hello")
+    assert db.get_ticket_by_id(ticket["id"], path=path)["support_ts"] == "s1"
+    assert [t["support_ts"] for t in db.all_tickets(path=path)] == ["s1", "s2"]
+
+    db.create_user_message("D1", "f1", ticket["id"], "copy1", path=path)
+    followup = db.get_user_message("D1", "f1", path=path)
+    assert (followup["support_copy_ts"], followup["support_ts"], followup["user_id"]) == ("copy1", "s1", "U1")
+    assert db.get_user_message("D1", "nope", path=path) is None
+    db.delete_user_message("D1", "f1", path=path)
+    assert db.get_user_message("D1", "f1", path=path) is None

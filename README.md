@@ -97,15 +97,29 @@ actually came back up.
 ## How it behaves
 
 - DM the bot → 👀 reaction → "send to support?" prompt. Confirming forwards
-  it to the support channel and marks the DM ✅. The forwarded message has
-  **Claim** and **Resolve** buttons (same as `?claim` / `?close`).
-- **Attachments** move both ways: files a user sends (in the first message
-  or a follow-up) are copied into the ticket's support thread, and files a
-  helper attaches to a `?` reply are copied into the user's DM thread (a
-  bare `?` with files just sends the files). Copies are uploaded by the bot
-  itself — Slack doesn't allow a custom name/photo on file uploads — so the
-  message next to them is what says who sent them. Anything that fails to
-  copy gets a note in the support thread.
+  it to the support channel and marks the DM ✅. The forwarded message's
+  buttons follow the ticket's state: **Claim** + **Resolve** while it's
+  open, just **Resolve** (plus a "Claimed by" line) once claimed, and
+  **Reopen** (plus "Resolved by") once resolved.
+- **Attachments** move both ways, but the bot asks first: a user sending a
+  file as a follow-up gets a "send this to the support team?" prompt, and
+  a helper dropping a file into a ticket thread *without* `?` gets a
+  private "send this to the user?" prompt (only the files go — the text is
+  taken as internal). Files in the user's first message ride along with its
+  usual prompt, and a `?` reply with files sends them straight away (a bare
+  `?` just sends the files). Copies are uploaded by the bot itself — Slack
+  doesn't allow a custom name/photo on file uploads — so the message next to
+  them is what says who sent them. Anything that fails to copy gets a note
+  in the support thread.
+- **Edits and deletes follow the message**, and every one is logged in the
+  ticket's support thread by Chopsticks (before/after text, or what was
+  deleted), naming who did it without pinging them:
+  - a helper editing their `?` reply updates the user's copy; deleting it,
+    or editing the `?` away, deletes the user's copy.
+  - a user editing their original message updates the forwarded ticket
+    message; editing/deleting a follow-up updates/deletes its copy in the
+    thread. Deleting the original is logged but the ticket message stays,
+    since the whole thread hangs off it.
 - Once a ticket exists, further replies in that DM thread relay straight
   into the ticket's thread — posted under the user's own Slack name/photo
   (the opening `*Name* (@user):` line stays too) — no repeat prompt.
@@ -165,7 +179,21 @@ actually came back up.
 On a helper's own `?`-reply message: **Edit reply** and **Delete reply**,
 usable by the original sender or an admin. Editing only changes the text —
 Slack doesn't support changing a message's displayed name/photo after it's
-posted, so an edited reply keeps showing whoever sent the original.
+posted, so an edited reply keeps showing whoever sent the original. Both
+are logged in the thread, same as editing/deleting the message directly.
+
+### Upgrading an existing deploy
+
+Tickets forwarded before the state-following buttons existed have no
+buttons. Once the new version's running, give them the right ones:
+
+```bash
+python refresh_tickets.py           # dry run — lists what would change
+python refresh_tickets.py --apply   # update the messages
+```
+
+It only touches each message's buttons/status line (never its text) and is
+safe to re-run.
 
 ## Notes
 
