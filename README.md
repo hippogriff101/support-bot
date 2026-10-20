@@ -15,14 +15,16 @@ Go to https://api.slack.com/apps → **Create New App** → From scratch.
 - **Socket Mode**: turn it on, create an app-level token with the
   `connections:write` scope → that's `SLACK_APP_TOKEN`.
 - **Bot Token Scopes**: `chat:write`, `chat:write.customize`, `im:history`,
-  `im:read`, `groups:history` (use `channels:history` instead if your
-  support channel is public), `reactions:write`, `users:read`, `commands`,
-  `files:read`, `files:write`.
+  `im:read`, `im:write`, `groups:history` (use `channels:history` instead if
+  your support channel is public), `reactions:write`, `users:read`,
+  `commands`, `files:read`, `files:write`.
   `chat:write.customize` lets the bot post a helper's/user's own name and
   profile picture on relayed messages instead of the bot's — if you add
   this scope to an already-installed app, reinstall it to the workspace to
   pick up the new permission. `files:read`/`files:write` are what let the
   bot copy attachments between the user's DM and the support thread.
+  `im:write` is what lets a helper's `?@user` open a DM with someone who
+  hasn't DMed the bot first.
 - **Event Subscriptions**: `message.im`, `message.groups` (or
   `message.channels` if public), `app_home_opened`.
 - **App Home**: turn on the **Home Tab** (Messages Tab can stay off) — this
@@ -99,27 +101,36 @@ actually came back up.
 - DM the bot → 👀 reaction → "send to support?" prompt. Confirming forwards
   it to the support channel and marks the DM ✅. The forwarded message's
   buttons follow the ticket's state: **Claim** + **Resolve** while it's
-  open, just **Resolve** (plus a "Claimed by" line) once claimed, and
-  **Reopen** (plus "Resolved by") once resolved.
+  open, **Unclaim** + **Resolve** (plus a "Claimed by" line) once claimed,
+  and **Reopen** (plus "Resolved by") once resolved. A channel message's
+  buttons are shared by everyone who can see it, so they show the ticket's
+  state; whoever actually claimed it is the one who can unclaim (anyone else
+  gets a private "X already has this one").
 - **Attachments** move both ways, but the bot asks first: a user sending a
   file as a follow-up gets a "send this to the support team?" prompt, and
   a helper dropping a file into a ticket thread *without* `?` gets a
   private "send this to the user?" prompt (only the files go — the text is
-  taken as internal). Files in the user's first message ride along with its
+  taken as internal). The prompt names each file as a link, so it's clear
+  what's about to be sent; anything already deleted shows as a tombstone
+  and is skipped. Files in the user's first message ride along with its
   usual prompt, and a `?` reply with files sends them straight away (a bare
   `?` just sends the files). Copies are uploaded by the bot itself — Slack
   doesn't allow a custom name/photo on file uploads — so the message next to
   them is what says who sent them. Anything that fails to copy gets a note
   in the support thread.
 - **Edits and deletes follow the message**, and every one is logged in the
-  ticket's support thread by Chopsticks (before/after text, or what was
-  deleted), naming who did it without pinging them:
+  ticket's support thread naming who did it without pinging them:
   - a helper editing their `?` reply updates the user's copy; deleting it,
     or editing the `?` away, deletes the user's copy.
   - a user editing their original message updates the forwarded ticket
     message; editing/deleting a follow-up updates/deletes its copy in the
     thread. Deleting the original is logged but the ticket message stays,
     since the whole thread hangs off it.
+  - the log line carries both timestamps, so a long gap between sending and
+    editing isn't lost: `<name> deleted their message: "…", sent at
+    <time>, deleted at <time>` and `<name> edited their message. It
+    originally was sent at <time>, and was originally "…". It was edited at
+    <time> to "…"`. Times are UTC.
 - Once a ticket exists, further replies in that DM thread relay straight
   into the ticket's thread — posted under the user's own Slack name/photo
   (the opening `*Name* (@user):` line stays too) — no repeat prompt.
@@ -136,6 +147,25 @@ actually came back up.
   helper-only note in the thread, nothing to the user, and it doesn't stop
   anyone else from replying (see [Notes](#notes)). Purely for stats/context.
   `?unclaim` lets it go again.
+- **`?@user` starts a DM with someone** — inside the thread it offers to set
+  one up. `?<@U123>`, `? <@U123>` and a bare Slack ID all work; the offer
+  prompt names both people (`@you is setting up a message thread with
+  @them. Continue?`) so a mistyped ID is obvious before anything is sent.
+  Continuing opens a modal for the first message and an optional delay (up
+  to 48 hours), then the DM opens with a "… will send you a message here
+  <when>" line. Once the thread is open it behaves like any other: the
+  helper replies with `?…` (or a macro) and `?claim`/`?unclaim`/`?close` all
+  work, and the recipient's replies are surfaced in the support channel so
+  the team can follow along. Nothing here becomes a ticket.
+- **Broadcasts** (Home tab → **New broadcast**) send one message to a list
+  of people. Pick recipients, write the message — multi-paragraph, emoji and
+  any Slack formatting, with `{name}`, `{user-at}`, `{user}`, `{date}`,
+  `{event}` and `{helper}` placeholders filled in per recipient — and
+  optionally delay it. Each recipient is tracked individually (sent /
+  pending / failed) and sends are staggered by `BROADCAST_GAP_SECONDS`
+  (default 1.2s ≈ 50/minute, under `chat.postMessage`'s rate limit) so a
+  few hundred people don't trip it. Only helpers with the "can broadcast"
+  flag (admins always) see the button.
 - **Unanswered tickets**: a ticket is "waiting" while it's open and the
   user's latest message hasn't had a `?` reply since. `/support unanswered`
   and the Home tab list them longest-waiting first, with links.
@@ -148,10 +178,13 @@ actually came back up.
   Resolved counts.
 - The bot's **Home tab** (click its name/icon in Slack): anyone who isn't
   a helper just sees a "DM me for help" notice. Helpers see Open/Resolved
-  counts, the unanswered queue and a per-helper reply-count leaderboard.
-  Admins get the **admin dashboard** on top of that: each helper's resolved
-  count, org-wide numbers, **Settings** (support channel, event name, nudge
-  timing/name/icon), and add/edit/remove for **helpers** and **macros**.
+  counts, the unanswered queue, a per-helper reply-count leaderboard, and
+  anything they've scheduled (queued `?@user` messages, and past broadcasts
+  if they can broadcast). Admins get the **admin dashboard** on top of that:
+  each helper's resolved count, org-wide numbers, **Settings** (support
+  channel, event name, nudge timing/name/icon, broadcast spacing), and
+  add/edit/remove for **helpers** (each with a "can broadcast" toggle) and
+  **macros**.
 
 ### Commands
 
@@ -194,6 +227,26 @@ python refresh_tickets.py --apply   # update the messages
 
 It only touches each message's buttons/status line (never its text) and is
 safe to re-run.
+
+New tables (`outbox`, `scheduled_dms`, `broadcasts`, `broadcast_targets`,
+`dm_setups`) are created by `init_db()` on startup, so the upgrade needs no
+manual migration.
+
+## Development
+
+```bash
+python -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/pytest -q          # 64 tests
+./.venv/bin/ruff check .       # lint
+./.venv/bin/ruff format .      # format
+```
+
+The tests import `app.py`, which builds the Slack client at import time, so
+`tests/conftest.py` sets dummy tokens and stubs Bolt's token check — no
+network or real workspace needed. `tests/test_new_features.py` covers the
+pure logic (delay parsing, placeholder rendering, block building, DB
+round-trips); `tests/test_flows.py` drives the real handlers with a fake
+client (file prompts, `?@user` scheduling, broadcast fan-out).
 
 ## Notes
 
