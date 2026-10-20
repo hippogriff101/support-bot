@@ -20,6 +20,9 @@ SETTINGS = {
     "nudge_name": ("NUDGE_NAME", "Chopsticks"),
     # An emoji shortcode (`:chopsticks:`) or an image URL.
     "nudge_icon": ("NUDGE_ICON", ":chopsticks:"),
+    # Reaction added to a resolved ticket. Any emoji name works, including a
+    # custom one from your workspace (without the colons).
+    "resolved_emoji": ("RESOLVED_EMOJI", "white_check_mark"),
 }
 
 
@@ -65,3 +68,7 @@ def nudge_identity() -> dict:
     elif icon:
         identity["icon_emoji"] = icon if icon.startswith(":") else f":{icon.strip(':')}:"
     return identity
+
+
+def resolved_emoji() -> str:
+    return get("resolved_emoji").strip(":") or "white_check_mark"

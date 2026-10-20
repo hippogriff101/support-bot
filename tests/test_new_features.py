@@ -27,7 +27,7 @@ import scheduling
 # --- 1. ticket buttons follow state -----------------------------------------
 
 
-def test_ticket_blocks_reflect_state():
+def test_ticket_blocks_reflect_state(isolated_state):
     """The buttons on a ticket's message match what can happen to it next."""
     open_ticket = {"status": "open", "claimed_by": None, "resolved_by": None}
     claimed = {"status": "open", "claimed_by": "U_a", "resolved_by": None}

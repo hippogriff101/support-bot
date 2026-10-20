@@ -1,4 +1,5 @@
 import importlib
+import json
 import sqlite3
 from contextlib import closing
 
@@ -231,7 +232,9 @@ def test_home_views_build_for_every_audience(isolated_state, monkeypatch):
     helper_view = home.build_home_view("U_helper")
     admin_view = home.build_home_view("U_admin")
 
-    assert len(public["blocks"]) == 1
+    # The public view is just how to get help — nothing helper-only.
+    assert not any(b["type"] == "actions" for b in public["blocks"])
+    assert "Waiting on a reply" not in json.dumps(public)
     assert len(admin_view["blocks"]) <= 100
     assert len(admin_view["blocks"]) > len(helper_view["blocks"])
     waiting = next(
