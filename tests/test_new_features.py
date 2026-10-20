@@ -219,10 +219,11 @@ def test_mention_target_rejects_non_mentions(text):
 
 
 def test_dm_setup_modal_builds():
-    modal = home.dm_setup_modal("U123", "t1")
+    modal = home.dm_setup_modal("U123", {"thread_ts": "t1", "ticket_ts": "t1", "helper_id": "U9"})
     assert modal["callback_id"] == "dm_setup_submit"
     assert len(modal["title"]["text"]) <= 24
-    assert json.loads(modal["private_metadata"])["target"] == "U123"
+    metadata = json.loads(modal["private_metadata"])
+    assert metadata["target"] == "U123" and metadata["ticket_ts"] == "t1"  # the button's context survives
     assert any(b.get("block_id") == "delay" for b in modal["blocks"])
 
 

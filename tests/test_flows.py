@@ -190,11 +190,11 @@ def test_mention_target_flow_posts_continue(client, support_env):
     assert post is not None
     assert "<@U0HELPER>" in post["text"] and "<@U0TARGET>" in post["text"]
     assert any(e["action_id"] == "dm_setup_continue" for e in post["blocks"][-1]["elements"])
-    # The prompt hangs off the `?@user` message itself, not the ticket it was
-    # typed in, so it reads as a reply to what was actually typed.
-    assert post["thread_ts"] == "200.1"
+    # Typed as a reply, so the prompt goes in that same ticket thread — Slack
+    # has no threads on replies.
+    assert post["thread_ts"] == "100.1"
     value = json.loads(post["blocks"][-1]["elements"][0]["value"])
-    assert value["thread_ts"] == "200.1" and value["ticket_ts"] == "100.1"
+    assert value["thread_ts"] == "100.1" and value["ticket_ts"] == "100.1"
     # Nothing was DMed and nothing was scheduled yet.
     assert db.list_scheduled_dms() == []
 
@@ -241,13 +241,67 @@ def test_top_level_user_files_get_no_prompt(client, support_env):
     assert client.calls_named("chat_postEphemeral") == []
 
 
-def test_top_level_close_is_ignored_not_a_crash(client, support_env):
+def test_top_level_close_gets_a_hint_not_a_crash(client, support_env):
     app.handle_message(
         {"channel": "C_support", "channel_type": "channel", "ts": "200.1", "user": "U0HELPER", "text": "?close"},
         client,
     )
-    # No ticket to close — nothing happens, rather than an exception.
+    # No ticket to close — the helper is told so (just them), nothing is posted.
     assert client.calls_named("chat_postMessage") == []
+    assert "ticket's thread" in client.calls_named("chat_postEphemeral")[0]["text"]
+
+
+def _metadata_via_continue(client, prompt, user="U0HELPER"):
+    """Click Continue on a `?@user` prompt and return the metadata of the modal
+    it really opens — so the tests see exactly what the submit handler will."""
+    body = {
+        "actions": [{"value": prompt["blocks"][-1]["elements"][0]["value"]}],
+        "user": {"id": user},
+        "trigger_id": "trig",
+        "channel": {"id": "C_support"},
+        "message": {"ts": "900.1", "thread_ts": prompt.get("thread_ts")},
+    }
+    app.handle_dm_setup_continue(ack=_noop_ack, body=body, client=client)
+    return client.calls_named("views_open")[-1]["view"]["private_metadata"]
+
+
+def _submit_view(metadata, message="Hello {name}"):
+    return {
+        "private_metadata": metadata,
+        "state": {
+            "values": {
+                "target": {"value": {"selected_user": "U0TARGET"}},
+                "message": {"value": {"value": message}},
+                "delay": {"value": {"value": "2h"}},
+            }
+        },
+    }
+
+
+def test_mention_setup_from_a_ticket_logs_in_that_ticket(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    app.handle_message(
+        {
+            "channel": "C_support",
+            "channel_type": "channel",
+            "thread_ts": "100.1",
+            "ts": "200.1",
+            "user": "U0HELPER",
+            "text": "?<@U0TARGET>",
+        },
+        client,
+    )
+    metadata = _metadata_via_continue(client, client.first_post("setting up a message thread"))
+    captured = {}
+    app.handle_dm_setup_submit(
+        ack=lambda **k: captured.update(k),
+        body={"user": {"id": "U0HELPER"}},
+        client=client,
+        view=_submit_view(metadata),
+    )
+    assert "errors" not in captured
+    log = client.first_post("started a DM thread")
+    assert log is not None and log["thread_ts"] == "100.1"
 
 
 def test_mention_setup_from_the_channel_end_to_end(client, support_env):
@@ -257,22 +311,13 @@ def test_mention_setup_from_the_channel_end_to_end(client, support_env):
         {"channel": "C_support", "channel_type": "channel", "ts": "200.1", "user": "U0HELPER", "text": "?<@U0TARGET>"},
         client,
     )
-    prompt = client.first_post("setting up a message thread")
-    value = json.loads(prompt["blocks"][-1]["elements"][0]["value"])
-
-    view = {
-        "private_metadata": json.dumps(value),
-        "state": {
-            "values": {
-                "target": {"value": {"selected_user": "U0TARGET"}},
-                "message": {"value": {"value": "Hello {name}"}},
-                "delay": {"value": {"value": "2h"}},
-            }
-        },
-    }
+    metadata = _metadata_via_continue(client, client.first_post("setting up a message thread"))
     captured = {}
     app.handle_dm_setup_submit(
-        ack=lambda **k: captured.update(k), body={"user": {"id": "U0HELPER"}}, client=client, view=view
+        ack=lambda **k: captured.update(k),
+        body={"user": {"id": "U0HELPER"}},
+        client=client,
+        view=_submit_view(metadata),
     )
     assert "errors" not in captured
     rows = db.list_scheduled_dms("U0HELPER")
@@ -561,3 +606,33 @@ def test_question_mark_with_image_sends_the_image(client, support_env, monkeypat
     assert uploads[0]["channel"] == "D_user" and uploads[0]["thread_ts"] == "d1"
     assert uploads[0]["file_uploads"][0]["filename"] == "shot.png"
     assert client.calls_named("chat_postEphemeral") == []  # no "send this?" prompt for a `?` message
+
+
+# --- top-level messages in the support channel --------------------------------
+
+
+def _channel_message(text, user="U0HELPER", **extra):
+    return {"channel": "C_support", "channel_type": "channel", "ts": "200.1", "user": user, "text": text, **extra}
+
+
+def test_non_helper_top_level_question_is_left_alone(client, support_env):
+    app.handle_message(_channel_message("?anyone around", user="U0RANDOM"), client)
+    assert client.calls == []  # no :x:, no "you don't have permission"
+
+
+def test_non_helper_in_a_ticket_thread_is_still_told(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    app.handle_message(_channel_message("?hi", user="U0RANDOM", thread_ts="100.1"), client)
+    assert client.calls_named("reactions_add")[0]["name"] == "x"
+
+
+def test_self_target_top_level_doesnt_crash(client, support_env):
+    app.handle_message(_channel_message("?<@U0HELPER>"), client)
+    note = client.calls_named("chat_postEphemeral")[0]
+    assert "yourself" in note["text"] and note["thread_ts"] == "200.1"
+    assert client.calls_named("chat_postMessage") == []
+
+
+def test_mention_in_a_non_ticket_thread_is_ignored(client, support_env):
+    app.handle_message(_channel_message("?<@U0TARGET>", thread_ts="150.1"), client)
+    assert client.first_post("setting up a message thread") is None
