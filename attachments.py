@@ -27,15 +27,47 @@ def relayable(files: list | None) -> list:
     return [f for f in files or [] if f.get("url_private_download") and f.get("mode") != "tombstone"]
 
 
+def summary(files: list | None) -> list:
+    """The three fields we need to describe a file in a prompt and fetch it
+    later, as plain strings.
+
+    Full Slack file objects are far too big to park in a button value when a
+    prompt has to after a restart (they carry `thumb_*`, `permalink` and more),
+    so prompts stash this instead and hand it straight back to relay_files().
+    """
+    return [
+        {
+            "id": f.get("id", ""),
+            "name": f.get("name") or f.get("title") or "attachment",
+            "url": f["url_private_download"],
+        }
+        for f in files or []
+    ]
+
+
+def describe(files: list | None) -> str:
+    """`<url|a.png>` lines for a confirm prompt — the file's name, linked to
+    the message it came from so the sender can check it's the right one."""
+    lines = []
+    for f in files or []:
+        name = f.get("name") or f.get("title") or "attachment"
+        url = f.get("url") or f.get("permalink") or f.get("url_private")
+        lines.append(f"<{url}|{name}>" if url else f"`{name}`")
+    return "\n".join(lines)
+
+
 def relay_files(client, files: list, channel: str, thread_ts: str) -> list[str]:
     """Copy `files` into `channel`'s `thread_ts` thread. Returns the names of
     any that couldn't be copied, so the caller can say so instead of the
     file silently going missing."""
     uploads, failed = [], []
-    for f in relayable(files):
+    for f in files or []:
         name = f.get("name") or f.get("title") or "attachment"
+        url = f.get("url") or f.get("url_private_download")
+        if not url:
+            continue
         try:
-            content = _download(f["url_private_download"], client.token)
+            content = _download(url, client.token)
             if len(content) > MAX_BYTES:
                 raise ValueError("file too large")
             uploads.append({"content": content, "filename": name, "title": f.get("title") or name})

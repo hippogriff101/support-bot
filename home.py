@@ -19,6 +19,7 @@ import config
 import db
 import helpers
 import macros
+import scheduling
 
 BAR_LEN = 10
 # Home views cap out at 100 blocks; keep each list well inside that.
@@ -120,7 +121,8 @@ def build_home_view(user_id: str) -> dict:
         }
 
     is_admin = helpers.is_admin(user_id)
-    blocks = _helper_blocks(is_admin)
+    blocks = _helper_blocks(is_admin, user_id)
+    blocks += _scheduled_blocks(user_id)
     if is_admin:
         blocks += _admin_blocks()
     return {"type": "home", "blocks": blocks}
@@ -138,7 +140,7 @@ def _setup_blocks() -> list:
     ]
 
 
-def _helper_blocks(is_admin: bool) -> list:
+def _helper_blocks(is_admin: bool, user_id: str = "") -> list:
     open_count = db.count_tickets_by_status("open")
     closed_count = db.count_tickets_by_status("closed")
 
@@ -185,6 +187,21 @@ def _helper_blocks(is_admin: bool) -> list:
             line += f", *{resolved_counts.get(uid, 0)}* resolved"
         rows.append(line)
     blocks.append(_section("*Support agents*\n" + "\n".join(rows)))
+    return blocks
+
+
+def _scheduled_blocks(user_id: str) -> list:
+    """Queued `?@user` messages, so a helper can see what they've set up."""
+    blocks = []
+
+    mine = db.list_scheduled_dms(user_id)
+    if mine:
+        blocks.append({"type": "divider"})
+        lines = [
+            f"• {scheduling.humanize(row['send_at'])} — to <@{row['recipient_id']}>: {_snippet(row['body'], 60)}"
+            for row in mine[:MAX_ROWS]
+        ]
+        blocks.append(_section(f":alarm_clock: *Your scheduled messages ({len(mine)})*\n" + "\n".join(lines)))
     return blocks
 
 
@@ -334,9 +351,11 @@ def helper_modal(user_id: str | None = None) -> dict:
         user_select["initial_user"] = user_id
     admin_option = {"text": {"type": "plain_text", "text": "Admin (can manage settings, helpers and macros)"}}
     admin_option["value"] = "admin"
-    checkbox = {"type": "checkboxes", "action_id": "value", "options": [admin_option]}
+    checkboxes = [
+        {"type": "checkboxes", "action_id": "admin", "options": [admin_option]},
+    ]
     if info.get("admin"):
-        checkbox["initial_options"] = [admin_option]
+        checkboxes[0]["initial_options"] = [admin_option]
 
     return _modal(
         "helper_submit",
@@ -354,7 +373,7 @@ def helper_modal(user_id: str | None = None) -> dict:
                 "block_id": "admin",
                 "optional": True,
                 "label": {"type": "plain_text", "text": "Permissions"},
-                "element": checkbox,
+                "element": checkboxes[0],
             },
         ],
         metadata={"editing": user_id},
@@ -376,3 +395,40 @@ def macro_modal(name: str | None = None) -> dict:
 
 def confirm_modal(callback_id: str, title: str, text: str, submit: str, metadata: dict) -> dict:
     return _modal(callback_id, title, [_section(text)], submit=submit, metadata=metadata)
+
+
+def _delay_input(block_id: str, label: str = "Send after", hint: str = "") -> dict:
+    return _text_input(
+        block_id,
+        label,
+        hint=hint
+        or "A delay like `now`, `2d`, `12h`, `90 minutes`, `1d 6h`, or a date like `2026-10-22 09:00` (UTC). "
+        "Up to 48 hours.",
+    )
+
+
+# --- Setting up a DM with somebody (?@user) ---------------------------------
+
+
+def dm_setup_modal(target_id: str, thread_ts: str) -> dict:
+    """The popup behind `?@user`: who to message, what to say, and when."""
+    return _modal(
+        "dm_setup_submit",
+        "Set up a DM",
+        [
+            _section(
+                f"First message to send to <@{target_id}>. `{{name}}` becomes their first name and "
+                "`{user-at}` mentions them."
+            ),
+            {
+                "type": "input",
+                "block_id": "target",
+                "label": {"type": "plain_text", "text": "Send to"},
+                "element": {"type": "users_select", "action_id": "value", "initial_user": target_id},
+            },
+            _text_input("message", "Message", multiline=True, hint="Slack formatting and emoji both work."),
+            _delay_input("delay", "Send after"),
+        ],
+        submit="Send",
+        metadata={"thread_ts": thread_ts, "target": target_id},
+    )

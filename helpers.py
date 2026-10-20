@@ -51,8 +51,8 @@ def add_helper(user_id: str, role: str, admin: bool = False) -> None:
 
 
 def set_helper(user_id: str, role: str, admin: bool) -> None:
-    """Set a helper's role and admin flag exactly — unlike add_helper(), this
-    can demote an admin. Used by the Home tab's edit form."""
+    """Set a helper's role and admin flags exactly — unlike add_helper(),
+    this can demote an admin. Used by the Home tab's edit form."""
     data = _load()
     data[user_id] = {"role": role, "admin": admin}
     _save(data)
