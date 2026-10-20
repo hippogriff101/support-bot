@@ -5,3 +5,4 @@ tickets.db
 DONOTREADME.md
 .pytest_cache/
 .ruff_cache/
+.venv/

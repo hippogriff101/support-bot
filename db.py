@@ -33,6 +33,7 @@ support channel can edit or delete the corresponding DM message later:
     author_id         -> who sent the reply, for permission checks
 """
 
+import json
 import os
 import sqlite3
 from contextlib import closing
@@ -124,6 +125,73 @@ def init_db(path: str = DB_PATH) -> None:
                 ticket_id INTEGER NOT NULL,
                 support_copy_ts TEXT NOT NULL,
                 UNIQUE (dm_channel, dm_ts)
+            )
+            """
+        )
+        conn.commit()
+
+        # "Do you want to send this file?" prompts can wait days before anyone
+        # clicks, and a button value caps out at 2000 chars, so the files
+        # behind a prompt are stashed here instead of travelled in the button.
+        # user_id is who the prompt asked (what "cancel" is checked against).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_ts TEXT NOT NULL,
+                msg_ts TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                files TEXT NOT NULL,
+                UNIQUE (thread_ts, msg_ts)
+            )
+            """
+        )
+        conn.commit()
+
+        # Scheduled helper messages: a helper sets a DM up now and has it sent
+        # at a chosen time (see scheduling.py).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scheduled_dms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dm_channel TEXT NOT NULL,
+                recipient_id TEXT NOT NULL,
+                helper_id TEXT NOT NULL,
+                body TEXT NOT NULL,
+                send_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                sent_ts TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+
+        # Admin broadcasts: one row per (broadcast, recipient), so each
+        # recipient's send time and delivery can be tracked on its own.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                author_id TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS broadcast_targets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                broadcast_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
+                dm_channel TEXT NOT NULL DEFAULT '',
+                send_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                sent_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -401,5 +469,186 @@ def set_setting(key: str, value: str, path: str = DB_PATH) -> None:
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
+        )
+        conn.commit()
+
+
+# --- "Do you want to send this file?" prompts -------------------------------
+
+
+def add_outbox(thread_ts: str, msg_ts: str, user_id: str, files: list, path: str = DB_PATH) -> None:
+    """Remember the files behind a relay prompt. `files` is the compact
+    [{id, name, url}] summary — not the full Slack file objects, which are
+    big enough to blow past SQLite's row limits."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO outbox (thread_ts, msg_ts, user_id, files) VALUES (?, ?, ?, ?)",
+            (thread_ts, msg_ts, user_id, json.dumps(files)),
+        )
+        conn.commit()
+
+
+def get_outbox(thread_ts: str, msg_ts: str, path: str = DB_PATH) -> dict | None:
+    """The stashed prompt for a message, or None if there isn't one (never
+    asked, or already sent/cancelled — in which case the prompt's buttons
+    have been replaced anyway)."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM outbox WHERE thread_ts = ? AND msg_ts = ?", (thread_ts, msg_ts)).fetchone()
+    if row is None:
+        return None
+    record = dict(row)
+    record["files"] = json.loads(record["files"])
+    return record
+
+
+def clear_outbox(thread_ts: str, msg_ts: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("DELETE FROM outbox WHERE thread_ts = ? AND msg_ts = ?", (thread_ts, msg_ts))
+        conn.commit()
+
+
+# --- Scheduled helper messages (the ?@user flow) ----------------------------
+
+
+def create_scheduled_dm(
+    dm_channel: str,
+    recipient_id: str,
+    helper_id: str,
+    body: str,
+    send_at: str,
+    path: str = DB_PATH,
+) -> int:
+    """Queue a helper's message to be posted in `dm_channel` at `send_at`
+    (UTC 'YYYY-MM-DD HH:MM:SS'). Returns the new row's id."""
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute(
+            "INSERT INTO scheduled_dms (dm_channel, recipient_id, helper_id, body, send_at) VALUES (?, ?, ?, ?, ?)",
+            (dm_channel, recipient_id, helper_id, body, send_at),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_scheduled_dm(scheduled_id: int, path: str = DB_PATH):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT * FROM scheduled_dms WHERE id = ?", (scheduled_id,)).fetchone()
+
+
+def list_due_scheduled_dms(path: str = DB_PATH) -> list:
+    """Pending helper messages whose time has come, oldest deadline first."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT * FROM scheduled_dms WHERE status = 'pending' AND send_at <= datetime('now') ORDER BY send_at ASC"
+        ).fetchall()
+
+
+def list_scheduled_dms(helper_id: str | None = None, path: str = DB_PATH) -> list:
+    """Pending helper messages — just `helper_id`'s, or everyone's if None."""
+    query = "SELECT * FROM scheduled_dms WHERE status = 'pending'"
+    params: tuple = ()
+    if helper_id is not None:
+        query += " AND helper_id = ?"
+        params = (helper_id,)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(query + " ORDER BY send_at ASC", params).fetchall()
+
+
+def mark_scheduled_dm_sent(scheduled_id: int, sent_ts: str | None = None, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            "UPDATE scheduled_dms SET status = 'sent', sent_ts = ? WHERE id = ?",
+            (sent_ts, scheduled_id),
+        )
+        conn.commit()
+
+
+def mark_scheduled_dm_failed(scheduled_id: int, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE scheduled_dms SET status = 'failed' WHERE id = ?", (scheduled_id,))
+        conn.commit()
+
+
+def cancel_scheduled_dm(scheduled_id: int, path: str = DB_PATH) -> bool:
+    """Drop a pending scheduled message. False if it's already gone/sent."""
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute(
+            "UPDATE scheduled_dms SET status = 'cancelled' WHERE id = ? AND status = 'pending'", (scheduled_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# --- Broadcasts ------------------------------------------------------------
+
+
+def create_broadcast(author_id: str, body: str, targets: list[tuple[str, str, str]], path: str = DB_PATH) -> int:
+    """One broadcast plus a row per recipient. `targets` is
+    [(user_id, dm_channel, send_at)]; returns the broadcast id."""
+    with closing(sqlite3.connect(path)) as conn:
+        cur = conn.execute("INSERT INTO broadcasts (author_id, body) VALUES (?, ?)", (author_id, body))
+        broadcast_id = cur.lastrowid
+        conn.executemany(
+            "INSERT INTO broadcast_targets (broadcast_id, user_id, dm_channel, send_at) VALUES (?, ?, ?, ?)",
+            [(broadcast_id, user_id, channel, send_at) for user_id, channel, send_at in targets],
+        )
+        conn.commit()
+        return broadcast_id
+
+
+def get_broadcast(broadcast_id: int, path: str = DB_PATH):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT * FROM broadcasts WHERE id = ?", (broadcast_id,)).fetchone()
+
+
+def broadcast_targets(broadcast_id: int, path: str = DB_PATH) -> list:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT * FROM broadcast_targets WHERE broadcast_id = ? ORDER BY id", (broadcast_id,)
+        ).fetchall()
+
+
+def list_broadcasts(path: str = DB_PATH) -> list:
+    """Newest first, with how many recipients each one has."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT broadcasts.*, COUNT(broadcast_targets.id) AS total, "
+            "SUM(broadcast_targets.status = 'sent') AS sent "
+            "FROM broadcasts LEFT JOIN broadcast_targets ON broadcast_targets.broadcast_id = broadcasts.id "
+            "GROUP BY broadcasts.id ORDER BY broadcasts.id DESC"
+        ).fetchall()
+
+
+def list_due_broadcast_targets(path: str = DB_PATH) -> list:
+    """Pending recipients whose time has come, joined to their broadcast."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT broadcast_targets.*, broadcasts.author_id FROM broadcast_targets "
+            "JOIN broadcasts ON broadcasts.id = broadcast_targets.broadcast_id "
+            "WHERE broadcast_targets.status = 'pending' AND broadcast_targets.send_at <= datetime('now') "
+            "ORDER BY broadcast_targets.send_at ASC"
+        ).fetchall()
+
+
+def mark_broadcast_target(target_id: int, status: str, path: str = DB_PATH) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            "UPDATE broadcast_targets SET status = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, target_id),
+        )
+        conn.execute(
+            "UPDATE broadcasts SET status = 'sent' "
+            "WHERE id = (SELECT broadcast_id FROM broadcast_targets WHERE id = ?) "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM broadcast_targets WHERE broadcast_id = broadcasts.id AND status = 'pending'"
+            ")",
+            (target_id,),
         )
         conn.commit()

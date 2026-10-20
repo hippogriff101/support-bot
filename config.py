@@ -20,6 +20,10 @@ SETTINGS = {
     "nudge_name": ("NUDGE_NAME", "Chopsticks"),
     # An emoji shortcode (`:chopsticks:`) or an image URL.
     "nudge_icon": ("NUDGE_ICON", ":chopsticks:"),
+    # Seconds to wait between two broadcast DMs, so a broadcast to a few
+    # hundred people doesn't trip Slack's per-channel rate limit. 1.2s ≈
+    # 50/minute, which is what chat.postMessage allows.
+    "broadcast_gap_seconds": ("BROADCAST_GAP_SECONDS", "1.2"),
 }
 
 
@@ -65,3 +69,12 @@ def nudge_identity() -> dict:
     elif icon:
         identity["icon_emoji"] = icon if icon.startswith(":") else f":{icon.strip(':')}:"
     return identity
+
+
+def broadcast_gap_seconds() -> float:
+    """Seconds between broadcast DMs. Clamped to Slack's ~50/min ceiling, and
+    never negative."""
+    try:
+        return min(1.2, max(0.0, float(get("broadcast_gap_seconds"))))
+    except ValueError:
+        return 1.2

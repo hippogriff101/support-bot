@@ -19,11 +19,15 @@ import config
 import db
 import helpers
 import macros
+import scheduling
 
 BAR_LEN = 10
 # Home views cap out at 100 blocks; keep each list well inside that.
 MAX_UNANSWERED = 10
 MAX_ROWS = 30
+# Each recipient is its own users_select, so a broadcast can only address
+# this many people per go.
+MAX_BROADCAST_PICKS = 20
 
 
 def stats_text(open_count: int, closed_count: int) -> str:
@@ -120,7 +124,8 @@ def build_home_view(user_id: str) -> dict:
         }
 
     is_admin = helpers.is_admin(user_id)
-    blocks = _helper_blocks(is_admin)
+    blocks = _helper_blocks(is_admin, user_id)
+    blocks += _scheduled_blocks(user_id, is_admin)
     if is_admin:
         blocks += _admin_blocks()
     return {"type": "home", "blocks": blocks}
@@ -138,11 +143,13 @@ def _setup_blocks() -> list:
     ]
 
 
-def _helper_blocks(is_admin: bool) -> list:
+def _helper_blocks(is_admin: bool, user_id: str = "") -> list:
     open_count = db.count_tickets_by_status("open")
     closed_count = db.count_tickets_by_status("closed")
 
     toolbar = [_button(":arrows_counterclockwise: Refresh", "home_refresh")]
+    if helpers.can_broadcast(user_id):
+        toolbar.append(_button(":mega: Broadcast", "open_broadcast"))
     if is_admin:
         toolbar += [
             _button(":gear: Settings", "open_config"),
@@ -185,6 +192,31 @@ def _helper_blocks(is_admin: bool) -> list:
             line += f", *{resolved_counts.get(uid, 0)}* resolved"
         rows.append(line)
     blocks.append(_section("*Support agents*\n" + "\n".join(rows)))
+    return blocks
+
+
+def _scheduled_blocks(user_id: str, is_admin: bool) -> list:
+    """Queued helper messages and past broadcasts, so a helper can see what
+    they've set up and an admin can see what's gone out."""
+    blocks = []
+
+    mine = db.list_scheduled_dms(user_id)
+    if mine:
+        blocks.append({"type": "divider"})
+        lines = [
+            f"• {scheduling.humanize(row['send_at'])} — to <@{row['recipient_id']}>: {_snippet(row['body'], 60)}"
+            for row in mine[:MAX_ROWS]
+        ]
+        blocks.append(_section(f":alarm_clock: *Your scheduled messages ({len(mine)})*\n" + "\n".join(lines)))
+
+    if helpers.can_broadcast(user_id):
+        recent = db.list_broadcasts()[:5]
+        if recent:
+            blocks.append({"type": "divider"})
+            total = len(db.list_broadcasts())
+            blocks.append(_section(f":mega: *Broadcasts* — {total} so far", accessory=_button("New", "open_broadcast")))
+            for broadcast in recent:
+                blocks.append(broadcast_summary(broadcast, db.broadcast_targets(broadcast["id"])))
     return blocks
 
 
@@ -334,9 +366,18 @@ def helper_modal(user_id: str | None = None) -> dict:
         user_select["initial_user"] = user_id
     admin_option = {"text": {"type": "plain_text", "text": "Admin (can manage settings, helpers and macros)"}}
     admin_option["value"] = "admin"
-    checkbox = {"type": "checkboxes", "action_id": "value", "options": [admin_option]}
+    broadcast_option = {
+        "text": {"type": "plain_text", "text": "Can broadcast (send scheduled DMs to a list of people)"}
+    }
+    broadcast_option["value"] = "broadcast"
+    checkboxes = [
+        {"type": "checkboxes", "action_id": "admin", "options": [admin_option]},
+        {"type": "checkboxes", "action_id": "broadcast", "options": [broadcast_option]},
+    ]
     if info.get("admin"):
-        checkbox["initial_options"] = [admin_option]
+        checkboxes[0]["initial_options"] = [admin_option]
+    if info.get("broadcast"):
+        checkboxes[1]["initial_options"] = [broadcast_option]
 
     return _modal(
         "helper_submit",
@@ -354,7 +395,14 @@ def helper_modal(user_id: str | None = None) -> dict:
                 "block_id": "admin",
                 "optional": True,
                 "label": {"type": "plain_text", "text": "Permissions"},
-                "element": checkbox,
+                "element": checkboxes[0],
+            },
+            {
+                "type": "input",
+                "block_id": "broadcast",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Broadcast access"},
+                "element": checkboxes[1],
             },
         ],
         metadata={"editing": user_id},
@@ -376,3 +424,103 @@ def macro_modal(name: str | None = None) -> dict:
 
 def confirm_modal(callback_id: str, title: str, text: str, submit: str, metadata: dict) -> dict:
     return _modal(callback_id, title, [_section(text)], submit=submit, metadata=metadata)
+
+
+def _delay_input(block_id: str, label: str = "Send after", hint: str = "") -> dict:
+    return _text_input(
+        block_id,
+        label,
+        hint=hint
+        or "A delay like `now`, `2d`, `12h`, `90 minutes`, `1d 6h`, or a date like `2026-10-22 09:00` (UTC). "
+        "Up to 48 hours.",
+    )
+
+
+# --- Setting up a DM with somebody (?@user) ---------------------------------
+
+
+def dm_setup_modal(target_id: str, thread_ts: str) -> dict:
+    """The popup behind `?@user`: who to message, what to say, and when."""
+    return _modal(
+        "dm_setup_submit",
+        "Set up a DM",
+        [
+            _section(
+                f"First message to send to <@{target_id}>. `{{name}}` becomes their first name and "
+                "`{user-at}` mentions them."
+            ),
+            {
+                "type": "input",
+                "block_id": "target",
+                "label": {"type": "plain_text", "text": "Send to"},
+                "element": {"type": "users_select", "action_id": "value", "initial_user": target_id},
+            },
+            _text_input("message", "Message", multiline=True, hint="Slack formatting and emoji both work."),
+            _delay_input("delay", "Send after"),
+        ],
+        submit="Send",
+        metadata={"thread_ts": thread_ts, "target": target_id},
+    )
+
+
+# --- Broadcasts -------------------------------------------------------------
+
+
+def broadcast_compose_modal(features: dict | None = None) -> dict:
+    """Step 1 of a broadcast: who, what and when. Step 2 picks the recipients,
+    since a modal can only hold one conversations_select."""
+    return _modal(
+        "broadcast_compose_submit",
+        "New broadcast",
+        [
+            _section(
+                "A DM to each recipient, sent by me. `{name}`, `{user-at}`, `{user}`, `{date}`, `{event}` and "
+                "`{helper}` are filled in per person. Multi-paragraph messages, emoji and Slack formatting all work."
+            ),
+            _text_input("message", "Message", multiline=True, hint="Everything after this is the DM body."),
+            _delay_input("delay", "Send after"),
+        ],
+        submit="Choose recipients",
+    )
+
+
+def broadcast_recipients_modal() -> dict:
+    """Step 2: the audience. `users_select` is the only element that allows
+    several picks, so one block per person."""
+    blocks = [
+        _section(
+            "Who should get this? Pick people one per box — add as many as you need. "
+            "Anyone you've already messaged is fine to include again."
+        )
+    ]
+    for i in range(1, MAX_BROADCAST_PICKS + 1):
+        blocks.append(
+            {
+                "type": "input",
+                "block_id": f"user{i}",
+                "optional": True,
+                "label": {"type": "plain_text", "text": f"Person {i}"},
+                "element": {"type": "users_select", "action_id": "value"},
+            }
+        )
+    return _modal("broadcast_recipients_submit", "Who gets it?", blocks, submit="Send broadcast")
+
+
+def broadcast_summary(broadcast, targets: list) -> list:
+    """The Home-tab block for one broadcast: where it is, and to whom.
+
+    `broadcast` is a row from `db.list_broadcasts` (which carries `sent` and
+    `total`); a bare `db.get_broadcast` row works too, with the counts
+    derived from `targets`."""
+    keys = broadcast.keys()
+    total = broadcast["total"] if "total" in keys else len(targets)
+    sent = broadcast["sent"] if "sent" in keys else sum(1 for t in targets if t["status"] == "sent")
+
+    lines = []
+    for t in targets[:MAX_ROWS]:
+        status = {"sent": ":white_check_mark:", "failed": ":x:", "pending": ":hourglass:"}.get(t["status"], "•")
+        lines.append(f"{status} <@{t['user_id']}> — {scheduling.humanize(t['send_at'])}")
+    if len(targets) > MAX_ROWS:
+        lines.append(f"_…and {len(targets) - MAX_ROWS} more._")
+    heading = f"*Broadcast #{broadcast['id']}* — {sent or 0}/{total or 0} sent"
+    return _section(heading + "\n" + "\n".join(lines))
