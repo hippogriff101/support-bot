@@ -147,11 +147,14 @@ actually came back up.
   helper-only note in the thread, nothing to the user, and it doesn't stop
   anyone else from replying (see [Notes](#notes)). Purely for stats/context.
   `?unclaim` lets it go again.
-- **`?@user` starts a DM with someone** — inside the thread it offers to set
-  one up. `?<@U123>`, `? <@U123>` and `?@U123` all work (the `@` is
+- **`?@user` starts a DM with someone** — type it in a ticket thread, or as a
+  message of its own in the channel; both work. `?<@U123>`, `? <@U123>` and
+  `?@U123` all work (the `@` is
   required, so a reply like `?WAIT` is never mistaken for an ID); the offer
   prompt names both people (`@you is setting up a message thread with
-  @them. Continue?`) so a mistyped ID is obvious before anything is sent.
+  @them. Continue?`) so a mistyped ID is obvious before anything is sent,
+  and it threads under the message you typed it on rather than whatever
+  ticket happened to be nearby.
   Continuing opens a modal for the first message and an optional delay (up
   to 48 hours). The DM opens with a "… will send you a message here <when>"
   line, and the conversation gets **its own ticket** in the support channel,
@@ -228,7 +231,7 @@ on startup, so the upgrade needs no manual migration.
 
 ```bash
 python -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-./.venv/bin/pytest -q          # 85 tests
+./.venv/bin/pytest -q          # 93 tests
 ./.venv/bin/ruff check .       # lint
 ./.venv/bin/ruff format .      # format
 ```

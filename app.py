@@ -393,8 +393,9 @@ def handle_message(event, client):
 
     if is_dm:
         _handle_dm(event, client)
-    elif in_support and event.get("thread_ts"):
-        # Top-level channel chatter outside a thread has nothing to relay.
+    elif in_support:
+        # A reply in a ticket thread, or a `?@user` typed as its own message in
+        # the channel — which starts a thread rather than joining one.
         _handle_support_reply(event, client)
 
 
@@ -545,29 +546,35 @@ def _handle_dm(event, client) -> None:
 
 
 def _handle_support_reply(event, client) -> None:
-    """A "?" reply in a ticket thread -> gate on helper status, maybe relay."""
+    """A `?` message in the support channel -> gate on helper status, maybe relay.
+
+    Covers a reply inside a ticket thread and a `?@user` posted as its own
+    message in the channel, so the ticket lookup can legitimately come back
+    empty.
+    """
     channel = event["channel"]
     text = event.get("text", "")
     ts = event["ts"]
     user_id = event["user"]
     files = attachments.relayable(event.get("files"))
+    thread_ts = event.get("thread_ts")
 
     if not text.startswith("?"):
-        # Internal chatter in a thread, not meant for the user — but a helper
-        # dropping a file in might well mean it for them, so offer (just to
-        # them) to send it on.
-        if files and helpers.is_helper(user_id) and db.get_ticket_by_support_ts(event["thread_ts"]):
-            db.add_outbox(event["thread_ts"], ts, user_id, attachments.summary(files))
+        # Internal chatter, not meant for the user — but a helper dropping a
+        # file in might well mean it for them, so offer (just to them) to send
+        # it on. Outside a ticket thread there's nobody to send it to.
+        if files and helpers.is_helper(user_id) and thread_ts and db.get_ticket_by_support_ts(thread_ts):
+            db.add_outbox(thread_ts, ts, user_id, attachments.summary(files))
             client.chat_postEphemeral(
                 channel=channel,
-                thread_ts=event["thread_ts"],
+                thread_ts=thread_ts,
                 user=user_id,
                 text="Do you want to send this to the user?",
                 blocks=_yes_no(
                     f"Do you want to send your {len(files)} attachment(s) to the user?",
                     "confirm_helper_files",
                     "cancel_helper_files",
-                    {"thread_ts": event["thread_ts"], "msg_ts": ts, "asker": user_id},
+                    {"thread_ts": thread_ts, "msg_ts": ts, "asker": user_id},
                     files=attachments.describe(files),
                 ),
             )
@@ -577,17 +584,26 @@ def _handle_support_reply(event, client) -> None:
         client.reactions_add(channel=channel, timestamp=ts, name="x")
         client.chat_postEphemeral(
             channel=channel,
-            thread_ts=event["thread_ts"],
+            thread_ts=thread_ts,
             user=user_id,
             text="You don't have permission to post here — ping an admin if you think that's wrong.",
         )
         return
 
-    ticket = db.get_ticket_by_support_ts(event["thread_ts"])
-    if ticket is None:
-        return  # reply on a thread we don't recognise as a ticket
-
     reply_text = text[1:].strip()
+
+    # `?@user` / `?<@U123>` / `? U123` is addressed to somebody else, so it
+    # stands on its own as a channel message — there needn't be a ticket
+    # behind it for this to work.
+    target = _mention_target(reply_text)
+    if target:
+        _start_dm_setup(client, db.get_ticket_by_support_ts(thread_ts) if thread_ts else None, ts, user_id, target)
+        return
+
+    ticket = db.get_ticket_by_support_ts(thread_ts) if thread_ts else None
+    if ticket is None:
+        return  # reply in a thread we don't recognise as a ticket
+
     command = reply_text.lower()
 
     # `?close` resolves the ticket without relaying anything to the user.
@@ -601,13 +617,6 @@ def _handle_support_reply(event, client) -> None:
         return
     if command == "unclaim":
         _unclaim_ticket(client, ticket, user_id)
-        return
-
-    # `?@user` / `?<@U123>` / `? U123` — start a new DM thread with that
-    # person instead of replying to this ticket's user.
-    target = _mention_target(reply_text)
-    if target:
-        _start_dm_setup(client, ticket, user_id, target)
         return
 
     if not reply_text and not files:
@@ -643,15 +652,22 @@ def _mention_target(text: str) -> str | None:
     return match.group(1) or match.group(2)
 
 
-def _start_dm_setup(client, ticket, helper_id: str, target_id: str) -> None:
-    """The "setting up a message thread" prompt, posted in the ticket thread
-    where the helper typed it."""
+def _start_dm_setup(client, ticket, msg_ts: str, helper_id: str, target_id: str) -> None:
+    """The "setting up a message thread" prompt, threaded under the message the
+    helper typed `?@user` on.
+
+    `ticket` is the ticket that message was in, or None when it was posted as a
+    message of its own. The prompt belongs to the `?@user` line either way, so
+    it reads as a reply to what was actually typed rather than to whatever
+    ticket happened to be nearby — and the confirm step carries the ticket
+    along only as the place to log it.
+    """
     if target_id == helper_id:
         _support_note(client, ticket, "You can't set up a DM with yourself.")
         return
     client.chat_postMessage(
         channel=config.support_channel_id(),
-        thread_ts=ticket["support_ts"],
+        thread_ts=msg_ts,
         text=f"<@{helper_id}> is setting up a message thread with <@{target_id}>. Continue?",
         blocks=[
             {
@@ -670,7 +686,12 @@ def _start_dm_setup(client, ticket, helper_id: str, target_id: str) -> None:
                         "style": "primary",
                         "action_id": "dm_setup_continue",
                         "value": json.dumps(
-                            {"thread_ts": ticket["support_ts"], "helper_id": helper_id, "target": target_id}
+                            {
+                                "thread_ts": msg_ts,
+                                "ticket_ts": ticket["support_ts"] if ticket else None,
+                                "helper_id": helper_id,
+                                "target": target_id,
+                            }
                         ),
                     },
                     {
@@ -780,7 +801,9 @@ def handle_dm_setup_submit(ack, body, client, view):
     scheduled_id = db.create_scheduled_dm(
         dm_channel, target, caller_id, message, send_at, thread_ts=intro["ts"], support_ts=posted["ts"]
     )
-    origin = db.get_ticket_by_support_ts(metadata["thread_ts"])
+    # The ticket this was started from, if any — a `?@user` posted as its own
+    # channel message has none, and the new ticket above stands alone.
+    origin = db.get_ticket_by_support_ts(metadata["ticket_ts"]) if metadata.get("ticket_ts") else None
     if origin is not None:
         _log(
             client,

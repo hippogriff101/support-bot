@@ -190,14 +190,106 @@ def test_mention_target_flow_posts_continue(client, support_env):
     assert post is not None
     assert "<@U0HELPER>" in post["text"] and "<@U0TARGET>" in post["text"]
     assert any(e["action_id"] == "dm_setup_continue" for e in post["blocks"][-1]["elements"])
+    # The prompt hangs off the `?@user` message itself, not the ticket it was
+    # typed in, so it reads as a reply to what was actually typed.
+    assert post["thread_ts"] == "200.1"
+    value = json.loads(post["blocks"][-1]["elements"][0]["value"])
+    assert value["thread_ts"] == "200.1" and value["ticket_ts"] == "100.1"
     # Nothing was DMed and nothing was scheduled yet.
     assert db.list_scheduled_dms() == []
+
+
+def test_mention_target_works_as_a_top_level_channel_message(client, support_env):
+    """`?@user` typed as its own message in the support channel — no ticket and
+    no thread behind it — still starts the flow."""
+    app.handle_message(
+        {"channel": "C_support", "channel_type": "channel", "ts": "200.1", "user": "U0HELPER", "text": "?<@U0TARGET>"},
+        client,
+    )
+    post = client.first_post("setting up a message thread")
+    assert post is not None, "a top-level ?@user in the channel was ignored"
+    assert post["thread_ts"] == "200.1"
+    value = json.loads(post["blocks"][-1]["elements"][0]["value"])
+    assert value["ticket_ts"] is None
+    assert db.list_scheduled_dms() == []
+
+
+def test_bare_id_target_works_top_level_too(client, support_env):
+    """The `@U123` form (no `<…>`) also works as a top-level channel message."""
+    app.handle_message(
+        {"channel": "C_support", "channel_type": "channel", "ts": "200.1", "user": "U0HELPER", "text": "? @U0TARGET"},
+        client,
+    )
+    assert client.first_post("setting up a message thread") is not None
+
+
+def test_top_level_user_files_get_no_prompt(client, support_env):
+    """Without a ticket thread there's nobody to send files to, so a helper
+    dropping one in the channel top-level gets no prompt (and no crash)."""
+    files = [{"id": "F1", "name": "a.png", "url_private_download": "https://f/a.png", "mode": "hosted"}]
+    app.handle_message(
+        {
+            "channel": "C_support",
+            "channel_type": "channel",
+            "ts": "200.1",
+            "user": "U0HELPER",
+            "text": "",
+            "files": files,
+        },
+        client,
+    )
+    assert client.calls_named("chat_postEphemeral") == []
+
+
+def test_top_level_close_is_ignored_not_a_crash(client, support_env):
+    app.handle_message(
+        {"channel": "C_support", "channel_type": "channel", "ts": "200.1", "user": "U0HELPER", "text": "?close"},
+        client,
+    )
+    # No ticket to close — nothing happens, rather than an exception.
+    assert client.calls_named("chat_postMessage") == []
+
+
+def test_mention_setup_from_the_channel_end_to_end(client, support_env):
+    """The whole flow with no ticket anywhere: the prompt, then the submit
+    opening its own ticket for the new conversation."""
+    app.handle_message(
+        {"channel": "C_support", "channel_type": "channel", "ts": "200.1", "user": "U0HELPER", "text": "?<@U0TARGET>"},
+        client,
+    )
+    prompt = client.first_post("setting up a message thread")
+    value = json.loads(prompt["blocks"][-1]["elements"][0]["value"])
+
+    view = {
+        "private_metadata": json.dumps(value),
+        "state": {
+            "values": {
+                "target": {"value": {"selected_user": "U0TARGET"}},
+                "message": {"value": {"value": "Hello {name}"}},
+                "delay": {"value": {"value": "2h"}},
+            }
+        },
+    }
+    captured = {}
+    app.handle_dm_setup_submit(
+        ack=lambda **k: captured.update(k), body={"user": {"id": "U0HELPER"}}, client=client, view=view
+    )
+    assert "errors" not in captured
+    rows = db.list_scheduled_dms("U0HELPER")
+    assert len(rows) == 1
+    # Freddie's design: the conversation gets a ticket of its own, opened from
+    # the channel message, and the scheduled message lands in the DM thread.
+    assert rows[0]["recipient_id"] == "U0TARGET"
+    assert rows[0]["support_ts"], "the ?@user conversation got no ticket of its own"
+    ticket = db.get_ticket_by_support_ts(rows[0]["support_ts"])
+    assert ticket is not None and ticket["user_id"] == "U0TARGET"
+    assert ticket["dm_channel"] == "D-U0TARGET"
 
 
 def test_dm_setup_submit_schedules_and_opens_dm(client, support_env):
     db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="*User*:\n> help")
     view = {
-        "private_metadata": json.dumps({"thread_ts": "100.1", "target": "U0TARGET"}),
+        "private_metadata": json.dumps({"thread_ts": "200.1", "ticket_ts": "100.1", "target": "U0TARGET"}),
         "state": {
             "values": {
                 "target": {"value": {"selected_user": "U0TARGET"}},
