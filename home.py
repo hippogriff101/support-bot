@@ -410,8 +410,10 @@ def _delay_input(block_id: str, label: str = "Send after", hint: str = "") -> di
 # --- Setting up a DM with somebody (?@user) ---------------------------------
 
 
-def dm_setup_modal(target_id: str, thread_ts: str) -> dict:
-    """The popup behind `?@user`: who to message, what to say, and when."""
+def dm_setup_modal(target_id: str, context: dict | None = None) -> dict:
+    """The popup behind `?@user`: who to message, what to say, and when.
+    `context` (the Continue button's payload — where it was typed, the ticket
+    it came from) rides along whole in the metadata for the submit handler."""
     return _modal(
         "dm_setup_submit",
         "Set up a DM",
@@ -430,5 +432,5 @@ def dm_setup_modal(target_id: str, thread_ts: str) -> dict:
             _delay_input("delay", "Send after"),
         ],
         submit="Send",
-        metadata={"thread_ts": thread_ts, "target": target_id},
+        metadata={**(context or {}), "target": target_id},
     )
