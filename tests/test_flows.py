@@ -69,6 +69,10 @@ class FakeClient:
         self.calls.append(("reactions_remove", kwargs))
         return {"ok": True}
 
+    def files_upload_v2(self, **kwargs):
+        self.calls.append(("files_upload_v2", kwargs))
+        return {"ok": True}
+
     def conversations_open(self, users=None, **kwargs):
         self.calls.append(("conversations_open", {"users": users, **kwargs}))
         return {"channel": {"id": f"D-{users[0]}"}}
@@ -429,3 +433,39 @@ def test_helper_modal_submit_saves(client, support_env):
     )
     assert "errors" not in captured
     assert helpers.get_role("U0NEW") == "Clubs" and helpers.is_admin("U0NEW")
+
+
+# --- file prompts land in the thread; `?` + files sends the files -------------
+
+IMAGE = {"id": "F1", "name": "shot.png", "url_private_download": "https://files/shot.png", "mode": "hosted"}
+
+
+def test_helper_file_prompt_is_in_the_thread(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    app._handle_support_reply(
+        {"channel": "C_support", "thread_ts": "100.1", "ts": "200.1", "user": "U0HELPER", "text": "", "files": [IMAGE]},
+        client,
+    )
+    assert client.calls_named("chat_postEphemeral")[0]["thread_ts"] == "100.1"
+
+
+@pytest.mark.parametrize("text", ["?here you go", "?"])
+def test_question_mark_with_image_sends_the_image(client, support_env, monkeypatch, text):
+    monkeypatch.setattr(attachments, "_download", lambda url, token: b"png")
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    app._handle_support_reply(
+        {
+            "channel": "C_support",
+            "thread_ts": "100.1",
+            "ts": "200.1",
+            "user": "U0HELPER",
+            "text": text,
+            "files": [IMAGE],
+        },
+        client,
+    )
+    uploads = client.calls_named("files_upload_v2")
+    assert len(uploads) == 1
+    assert uploads[0]["channel"] == "D_user" and uploads[0]["thread_ts"] == "d1"
+    assert uploads[0]["file_uploads"][0]["filename"] == "shot.png"
+    assert client.calls_named("chat_postEphemeral") == []  # no "send this?" prompt for a `?` message

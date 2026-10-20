@@ -560,6 +560,7 @@ def _handle_support_reply(event, client) -> None:
             db.add_outbox(event["thread_ts"], ts, user_id, attachments.summary(files))
             client.chat_postEphemeral(
                 channel=channel,
+                thread_ts=event["thread_ts"],
                 user=user_id,
                 text="Do you want to send this to the user?",
                 blocks=_yes_no(
@@ -576,6 +577,7 @@ def _handle_support_reply(event, client) -> None:
         client.reactions_add(channel=channel, timestamp=ts, name="x")
         client.chat_postEphemeral(
             channel=channel,
+            thread_ts=event["thread_ts"],
             user=user_id,
             text="You don't have permission to post here — ping an admin if you think that's wrong.",
         )
@@ -688,6 +690,7 @@ def _dm_setup_guard(client, body, payload: dict) -> bool:
         return True
     client.chat_postEphemeral(
         channel=body["channel"]["id"],
+        thread_ts=body["message"].get("thread_ts"),
         user=caller,
         text=f"Only <@{payload.get('helper_id')}> (who started this) or an admin can do that.",
     )
@@ -832,6 +835,7 @@ def handle_cancel_user_files(ack, body, client):
     if asker and body["user"]["id"] != asker and not helpers.is_admin(body["user"]["id"]):
         client.chat_postEphemeral(
             channel=body["channel"]["id"],
+            thread_ts=body["message"].get("thread_ts"),
             user=body["user"]["id"],
             text="That's someone else's prompt — only they (or an admin) can cancel it.",
         )
@@ -1189,17 +1193,25 @@ def handle_edit_reply_shortcut(ack, shortcut, client):
 
     support_reply_ts = shortcut["message"]["ts"]
     caller_id = shortcut["user"]["id"]
+    thread_ts = shortcut["message"].get("thread_ts")
 
     reply = db.get_reply_by_support_ts(support_reply_ts)
     if reply is None:
-        client.chat_postEphemeral(channel=channel_id, user=caller_id, text="That's not a tracked support reply.")
+        client.chat_postEphemeral(
+            channel=channel_id, thread_ts=thread_ts, user=caller_id, text="That's not a tracked support reply."
+        )
         return
     if reply["deleted"]:
-        client.chat_postEphemeral(channel=channel_id, user=caller_id, text="That reply was already deleted.")
+        client.chat_postEphemeral(
+            channel=channel_id, thread_ts=thread_ts, user=caller_id, text="That reply was already deleted."
+        )
         return
     if not _can_manage_reply(caller_id, reply):
         client.chat_postEphemeral(
-            channel=channel_id, user=caller_id, text="Only the sender or an admin can edit this reply."
+            channel=channel_id,
+            thread_ts=thread_ts,
+            user=caller_id,
+            text="Only the sender or an admin can edit this reply.",
         )
         return
 
@@ -1267,17 +1279,25 @@ def handle_delete_reply_shortcut(ack, shortcut, client):
 
     support_reply_ts = shortcut["message"]["ts"]
     caller_id = shortcut["user"]["id"]
+    thread_ts = shortcut["message"].get("thread_ts")
 
     reply = db.get_reply_by_support_ts(support_reply_ts)
     if reply is None:
-        client.chat_postEphemeral(channel=channel_id, user=caller_id, text="That's not a tracked support reply.")
+        client.chat_postEphemeral(
+            channel=channel_id, thread_ts=thread_ts, user=caller_id, text="That's not a tracked support reply."
+        )
         return
     if reply["deleted"]:
-        client.chat_postEphemeral(channel=channel_id, user=caller_id, text="That reply was already deleted.")
+        client.chat_postEphemeral(
+            channel=channel_id, thread_ts=thread_ts, user=caller_id, text="That reply was already deleted."
+        )
         return
     if not _can_manage_reply(caller_id, reply):
         client.chat_postEphemeral(
-            channel=channel_id, user=caller_id, text="Only the sender or an admin can delete this reply."
+            channel=channel_id,
+            thread_ts=thread_ts,
+            user=caller_id,
+            text="Only the sender or an admin can delete this reply.",
         )
         return
 
