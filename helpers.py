@@ -39,14 +39,6 @@ def is_admin(user_id: str) -> bool:
     return _load().get(user_id, {}).get("admin", False)
 
 
-def can_broadcast(user_id: str) -> bool:
-    """Admins always can. Other helpers only with `"broadcast": true` in the
-    roster (tick "Can broadcast" when editing them), since a broadcast DMs
-    arbitrary people on the bot's behalf."""
-    info = _load().get(user_id, {})
-    return bool(info.get("admin") or info.get("broadcast"))
-
-
 def get_role(user_id: str) -> str | None:
     return _load().get(user_id, {}).get("role")
 
@@ -58,12 +50,11 @@ def add_helper(user_id: str, role: str, admin: bool = False) -> None:
     _save(data)
 
 
-def set_helper(user_id: str, role: str, admin: bool, broadcast: bool = False) -> None:
-    """Set a helper's role, admin and broadcast flags exactly — unlike
-    add_helper(), this can demote an admin. Used by the Home tab's edit
-    form."""
+def set_helper(user_id: str, role: str, admin: bool) -> None:
+    """Set a helper's role and admin flags exactly — unlike add_helper(),
+    this can demote an admin. Used by the Home tab's edit form."""
     data = _load()
-    data[user_id] = {"role": role, "admin": admin, "broadcast": broadcast}
+    data[user_id] = {"role": role, "admin": admin}
     _save(data)
 
 

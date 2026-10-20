@@ -1,10 +1,9 @@
-"""Tests for the five helper-facing features added on top of upstream:
+"""Tests for the four helper-facing features added on top of upstream:
 
 1. ticket buttons that follow the ticket's state,
 2. "do you want to send this?" file prompts,
 3. edit/delete mirroring with an audit log,
-4. the `?@user` scheduled-DM flow,
-5. Home-tab broadcasts.
+4. the `?@user` scheduled-DM flow.
 
 Anything that needs the real Slack client isn't tested here — the fake client
 covers the calls the code makes, and the pure logic (delay parsing, placeholder
@@ -22,7 +21,6 @@ import app
 import attachments
 import config
 import db
-import helpers
 import home
 import scheduling
 
@@ -137,7 +135,7 @@ def test_stamp_formats_slack_ts():
     assert app._stamp(None) == "?"
 
 
-# --- 4. delay parsing / placeholders (shared by ?@user and broadcasts) ------
+# --- 4. delay parsing / placeholders (shared by ?@user) ---------------------
 
 
 def test_parse_when_relative():
@@ -167,11 +165,6 @@ def test_parse_when_absolute_and_errors():
     assert scheduling.parse_when("2020-01-01 09:00", now)[1] is not None  # past
     _, problem = scheduling.parse_when("10d", now)  # over the 48h cap
     assert problem is not None and "48 hours" in problem
-
-
-def test_stagger_pushes_later():
-    assert scheduling.stagger("2026-10-20 12:00:00", 60) == "2026-10-20 12:01:00"
-    assert scheduling.stagger("garbage", 60) == "garbage"
 
 
 def test_render_placeholders(isolated_state):
@@ -221,7 +214,7 @@ def test_dm_setup_modal_builds():
     assert any(b.get("block_id") == "delay" for b in modal["blocks"])
 
 
-# --- 5. scheduled DMs and broadcasts ----------------------------------------
+# --- 5. scheduled DMs --------------------------------------------------------
 
 
 def test_scheduled_dm_roundtrip(isolated_state):
@@ -241,75 +234,10 @@ def test_due_scheduled_dms_only_returns_past(isolated_state):
     assert [r["recipient_id"] for r in db.list_due_scheduled_dms()] == ["U1"]
 
 
-def test_broadcast_roundtrip(isolated_state):
-    targets = [("U1", "D1", "2026-10-20 00:00:00"), ("U2", "D2", "2026-10-20 00:00:01")]
-    bid = db.create_broadcast("U_admin", "hi {name}", targets)
-    assert db.get_broadcast(bid)["body"] == "hi {name}"
-    rows = db.broadcast_targets(bid)
-    assert [r["dm_channel"] for r in rows] == ["D1", "D2"]
-    assert db.list_broadcasts()[0]["total"] == 2
-
-    db.mark_broadcast_target(rows[0]["id"], "sent")
-    assert db.broadcast_targets(bid)[0]["status"] == "sent"
-    db.mark_broadcast_target(rows[1]["id"], "sent")
-    assert db.get_broadcast(bid)["status"] == "sent"
-
-
-def test_due_broadcast_targets_join(isolated_state):
-    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
-    db.create_broadcast("U_admin", "hi", [("U1", "D1", past)])
-    due = db.list_due_broadcast_targets()
-    assert len(due) == 1
-    assert due[0]["author_id"] == "U_admin"
-
-
-def test_broadcast_modals_and_summary(isolated_state):
-    assert home.broadcast_compose_modal()["callback_id"] == "broadcast_compose_submit"
-    recipients = home.broadcast_recipients_modal()
-    assert recipients["callback_id"] == "broadcast_recipients_submit"
-    assert any(b.get("block_id") == "user1" for b in recipients["blocks"])
-    assert sum(1 for b in recipients["blocks"] if b.get("block_id", "").startswith("user")) == home.MAX_BROADCAST_PICKS
-
-    bid = db.create_broadcast("U_admin", "hi", [("U1", "D1", "2026-10-20 00:00:00")])
-    block = home.broadcast_summary(db.get_broadcast(bid), db.broadcast_targets(bid))
-    assert "Broadcast #" in block["text"]["text"]
-
-
-# --- helper roster broadcast flag -------------------------------------------
-
-
-def test_can_broadcast_follows_roster(isolated_state):
-    helpers.add_helper("U_admin", "Lead", admin=True)
-    helpers.add_helper("U_plain", "Support")
-    helpers.set_helper("U_poster", "Support", admin=False, broadcast=True)
-    assert helpers.can_broadcast("U_admin") is True  # admins always can
-    assert helpers.can_broadcast("U_poster") is True
-    assert helpers.can_broadcast("U_plain") is False
-
-
-def test_home_view_shows_broadcast_button_for_broadcasters(isolated_state, monkeypatch):
-    monkeypatch.setenv("SUPPORT_CHANNEL_ID", "C123")
-    helpers.add_helper("U_admin", "Lead", admin=True)
-    helpers.set_helper("U_poster", "Support", admin=False, broadcast=True)
-    helpers.add_helper("U_plain", "Support")
-
-    def has_broadcast(user_id):
-        view = home.build_home_view(user_id)
-        return any(
-            e.get("action_id") == "open_broadcast"
-            for b in view["blocks"]
-            for e in (b.get("elements") or [b.get("accessory")] if b.get("accessory") or b.get("elements") else [])
-        )
-
-    assert has_broadcast("U_admin") is True
-    assert has_broadcast("U_poster") is True
-    assert has_broadcast("U_plain") is False
-
-
 # --- migrations -------------------------------------------------------------
 
 
 def test_schema_has_new_tables(isolated_state):
     with closing(sqlite3.connect(db.DB_PATH)) as conn:
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert {"outbox", "scheduled_dms", "broadcasts", "broadcast_targets"} <= names
+    assert {"outbox", "scheduled_dms"} <= names

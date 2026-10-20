@@ -1,10 +1,9 @@
 """End-to-end-ish tests: drive the real handlers with a fake Slack client.
 
 The pure logic is covered in test_new_features.py; these check the wiring —
-that a prompt leads to the right relay, that `?@user` schedules a row instead
-of DMing somebody immediately, and that a broadcast fans out into per-recipient
-rows. The fake client records every call, so the assertions read like "this
-message landed in that thread".
+that a prompt leads to the right relay, and that `?@user` schedules a row
+instead of DMing somebody immediately. The fake client records every call, so
+the assertions read like "this message landed in that thread".
 
 Bolt's decorators return the function unchanged (the listener is stored on the
 App), so the handlers under test are just ordinary callables.
@@ -104,7 +103,7 @@ def support_env(isolated_state, monkeypatch):
     monkeypatch.setenv("SUPPORT_CHANNEL_ID", "C_support")
     importlib.reload(config)
     helpers.add_helper("U0HELPER", "Support")
-    helpers.set_helper("U0ADMIN", "Lead", admin=True, broadcast=True)
+    helpers.set_helper("U0ADMIN", "Lead", admin=True)
     yield "C_support"
     importlib.reload(config)  # drop the monkeypatched env from config's cache
 
@@ -243,43 +242,6 @@ def test_due_scheduled_dm_sends_rendered(client, support_env):
     assert post is not None
     assert post["channel"] == "D-U0TARGET"
     assert db.list_scheduled_dms("U0HELPER") == []  # no longer pending
-
-
-# --- feature 5: broadcast fans out into per-recipient rows ------------------
-
-
-def test_broadcast_recipients_submit_creates_rows(client, support_env):
-    db.set_setting("broadcast_draft:U0ADMIN", json.dumps({"message": "Hello {name}", "send_at": "2020-01-01 00:00:00"}))
-    view = {
-        "state": {
-            "values": {
-                "user1": {"value": {"selected_user": "U0ONE"}},
-                "user2": {"value": {"selected_user": "U0TWO"}},
-                "user3": {"type": "input", "value": {}},  # left blank
-            }
-        }
-    }
-    app.handle_broadcast_recipients(ack=_noop_ack, body={"user": {"id": "U0ADMIN"}}, client=client, view=view)
-    broadcasts = db.list_broadcasts()
-    assert broadcasts and broadcasts[0]["total"] == 2
-    targets = db.broadcast_targets(broadcasts[0]["id"])
-    assert [t["user_id"] for t in targets] == ["U0ONE", "U0TWO"]
-    assert {t["dm_channel"] for t in targets} == {"D-U0ONE", "D-U0TWO"}
-
-
-def test_broadcast_blocked_without_permission(client, support_env):
-    helpers.set_helper("U0PLAIN", "Support", admin=False, broadcast=False)
-    app.handle_open_broadcast(ack=_noop_ack, body={"user": {"id": "U0PLAIN"}, "trigger_id": "t"}, client=client)
-    assert client.calls_named("views_open") == []  # no composer opened
-    assert db.list_broadcasts() == []
-
-
-def test_broadcast_sends_due_targets(client, support_env):
-    bid = db.create_broadcast("U0ADMIN", "Hi {name}!", [("U0ONE", "D-U0ONE", "2020-01-01 00:00:00")])
-    app.send_due_broadcasts(client)
-    post = client.first_post("Hi ")
-    assert post is not None and post["channel"] == "D-U0ONE"
-    assert db.get_broadcast(bid)["status"] == "sent"
 
 
 # --- prompt values stay inside a button's 2000-char cap ---------------------

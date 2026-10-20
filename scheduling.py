@@ -1,6 +1,6 @@
-"""Timed helper messages: the `?@user` DM flow and Home-tab broadcasts.
+"""Timed helper messages: the `?@user` DM flow.
 
-Both features come down to the same two problems, so they share the code here:
+It comes down to two problems:
 
   1. When? A helper picks a delay (now, in an hour, in 3 days…) in a modal and
      we store the resulting absolute UTC timestamp, so nothing depends on the
@@ -9,12 +9,10 @@ Both features come down to the same two problems, so they share the code here:
 
 Rendering is deliberately tiny and hand-rolled rather than `str.format()` or
 `string.Template`: helper text is full of Slack syntax that must survive
-untouched, and a stray `{` shouldn't blow up a DM to a few hundred people.
+untouched, and a stray `{` shouldn't blow up a DM.
+
 Unknown placeholders are left as written so a helper can see (and fix) a typo
 instead of silently sending a broken message.
-
-Sending is split from rendering so a failed send to one person doesn't stop
-the rest: the callers mark each recipient sent/failed individually.
 """
 
 import logging
@@ -47,16 +45,6 @@ def to_sqlite(moment: datetime) -> str:
     """A datetime as SQLite's CURRENT_TIMESTAMP format (UTC, second
     precision) so string comparisons against datetime('now') work."""
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def stagger(send_at: str, seconds: float) -> str:
-    """Push a SQLite timestamp later by `seconds`, for spacing out a broadcast
-    so each recipient's DM lands a rate-limit gap after the last."""
-    try:
-        base = datetime.strptime(send_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return send_at
-    return to_sqlite(base + timedelta(seconds=seconds))
 
 
 def parse_when(text: str, now: datetime | None = None) -> tuple[str | None, str | None]:

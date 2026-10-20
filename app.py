@@ -24,8 +24,8 @@ logging.basicConfig(level=logging.INFO)
 STATS_SETTING = "anchored_stats_ts"
 RESOLVED_EMOJI = "ms-green-tick"
 NUDGE_CHECK_SECONDS = 10 * 60
-# How often to look for scheduled DMs / broadcast DMs that are due. A minute
-# is fine: nothing here is more time-critical than "sometime around then".
+# How often to look for scheduled `?@user` DMs that are due. A minute is fine:
+# nothing here is more time-critical than "sometime around then".
 SCHEDULER_CHECK_SECONDS = 60
 # Message subtypes that are still a person talking: plain messages, file
 # uploads, and "also send to channel" thread replies.
@@ -334,7 +334,7 @@ def _nudge_loop(client, stop: threading.Event) -> None:
         stop.wait(NUDGE_CHECK_SECONDS)
 
 
-# --- Timed sends: `?@user` messages and broadcasts ---------------------------
+# --- Timed sends: `?@user` messages -------------------------------------------
 
 
 def send_due_scheduled_dms(client) -> None:
@@ -360,44 +360,12 @@ def send_due_scheduled_dms(client) -> None:
             db.mark_scheduled_dm_failed(row["id"])
 
 
-def send_due_broadcasts(client) -> None:
-    """Send broadcast DMs that are due, one at a time with a pause between
-    each so a few hundred recipients don't trip Slack's rate limit."""
-    due = db.list_due_broadcast_targets()
-    if not due:
-        return
-    gap = config.broadcast_gap_seconds()
-    for index, target in enumerate(due):
-        broadcast = db.get_broadcast(target["broadcast_id"])
-        if broadcast is None:
-            db.mark_broadcast_target(target["id"], "failed")
-            continue
-        try:
-            body = scheduling.render(
-                broadcast["body"],
-                user_id=target["user_id"],
-                name=real_name(target["user_id"]),
-                helper_id=broadcast["author_id"],
-            )
-            client.chat_postMessage(channel=target["dm_channel"], text=body)
-            db.mark_broadcast_target(target["id"], "sent")
-        except Exception as e:
-            logging.warning("Couldn't send broadcast %s to %s: %s", target["broadcast_id"], target["user_id"], e)
-            db.mark_broadcast_target(target["id"], "failed")
-        if gap and index < len(due) - 1:
-            time.sleep(gap)
-
-
 def _scheduler_loop(client, stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             send_due_scheduled_dms(client)
         except Exception:
             logging.exception("Scheduled-DM send failed")
-        try:
-            send_due_broadcasts(client)
-        except Exception:
-            logging.exception("Broadcast send failed")
         stop.wait(SCHEDULER_CHECK_SECONDS)
 
 
@@ -1709,7 +1677,6 @@ def handle_helper_submit(ack, body, client, view):
     target_id = values["user"]["value"]["selected_user"]
     role = values["role"]["value"]["value"].strip()
     as_admin = bool(values["admin"]["value"].get("selected_options"))
-    as_broadcaster = bool(values["broadcast"]["value"].get("selected_options"))
     editing = json.loads(view["private_metadata"]).get("editing")
 
     # Changing the person on an edit moves the entry, so the old one goes.
@@ -1724,7 +1691,7 @@ def handle_helper_submit(ack, body, client, view):
 
     if moved_from:
         helpers.remove_helper(moved_from)
-    helpers.set_helper(target_id, role, admin=as_admin, broadcast=as_broadcaster)
+    helpers.set_helper(target_id, role, admin=as_admin)
     publish_home(client, caller_id)
 
 
@@ -1802,112 +1769,6 @@ def handle_delete_macro_submit(ack, body, client, view):
     if helpers.is_admin(caller_id):
         macros.delete_macro(json.loads(view["private_metadata"])["name"])
         publish_home(client, caller_id)
-
-
-# --- Broadcasts --------------------------------------------------------------
-
-
-@app.action("open_broadcast")
-def handle_open_broadcast(ack, body, client):
-    ack()
-    caller_id = body["user"]["id"]
-    if helpers.can_broadcast(caller_id):
-        client.views_open(trigger_id=body["trigger_id"], view=home.broadcast_compose_modal())
-    else:
-        publish_home(client, caller_id)
-
-
-@app.view("broadcast_compose_submit")
-def handle_broadcast_compose(ack, body, client, view):
-    """Step 1: hold the message and timing, then ask who gets it. A modal can
-    only carry one conversations_select, hence the second view."""
-    caller_id = body["user"]["id"]
-    if not helpers.can_broadcast(caller_id):
-        ack()
-        return
-    values = view["state"]["values"]
-    message = values["message"]["value"]["value"].strip()
-    delay = values["delay"]["value"]["value"]
-    if not message:
-        ack(response_action="errors", errors={"message": "Write the message to send."})
-        return
-    send_at, problem = scheduling.parse_when(delay)
-    if problem:
-        ack(response_action="errors", errors={"delay": problem})
-        return
-    ack(response_action="update", view=home.broadcast_recipients_modal())
-    # The recipients view gets the draft through private_metadata, which the
-    # update above can't set — so stash it in the DB-backed settings table,
-    # keyed by the composer, and read it back on submit.
-    db.set_setting(f"broadcast_draft:{caller_id}", json.dumps({"message": message, "send_at": send_at}))
-
-
-@app.view("broadcast_recipients_submit")
-def handle_broadcast_recipients(ack, body, client, view):
-    caller_id = body["user"]["id"]
-    if not helpers.can_broadcast(caller_id):
-        ack()
-        return
-    draft_raw = db.get_setting(f"broadcast_draft:{caller_id}")
-    if not draft_raw:
-        ack(response_action="errors", errors={"user1": "That draft expired — start again from the Home tab."})
-        return
-    draft = json.loads(draft_raw)
-
-    recipients = []
-    for block_id, block in view["state"]["values"].items():
-        if not block_id.startswith("user"):
-            continue
-        selected = block["value"].get("selected_user")
-        if selected and selected not in recipients:
-            recipients.append(selected)
-    if not recipients:
-        ack(response_action="errors", errors={"user1": "Pick at least one person."})
-        return
-    if len(recipients) > home.MAX_BROADCAST_PICKS:
-        ack(response_action="errors", errors={"user1": f"Up to {home.MAX_BROADCAST_PICKS} people per broadcast."})
-        return
-    ack()
-
-    channels = []
-    for recipient in recipients:
-        try:
-            channels.append((recipient, client.conversations_open(users=[recipient])["channel"]["id"]))
-        except Exception as e:
-            logging.warning("Couldn't open a DM with %s for a broadcast: %s", recipient, e)
-
-    if not channels:
-        publish_home(client, caller_id)
-        return
-
-    # Stagger each recipient by the rate-limit gap so a big broadcast doesn't
-    # hammer chat.postMessage all at once.
-    gap = config.broadcast_gap_seconds()
-    targets = [
-        (recipient, channel_id, scheduling.stagger(draft["send_at"], gap * index))
-        for index, (recipient, channel_id) in enumerate(channels)
-    ]
-    broadcast_id = db.create_broadcast(caller_id, draft["message"], targets)
-
-    db.set_setting(f"broadcast_draft:{caller_id}", "")
-    _broadcast_ticket_note(client, broadcast_id, caller_id, len(channels), draft["send_at"])
-    publish_home(client, caller_id)
-
-
-def _broadcast_ticket_note(client, broadcast_id: int, caller_id: str, count: int, send_at: str) -> None:
-    channel = config.support_channel_id()
-    if not channel:
-        return
-    try:
-        client.chat_postMessage(
-            channel=channel,
-            text=(
-                f":mega: <@{caller_id}> set up broadcast #{broadcast_id} to *{count}* "
-                f"person(s), {scheduling.humanize(send_at)} ({send_at} UTC)."
-            ),
-        )
-    except Exception as e:
-        logging.warning("Couldn't announce broadcast %s: %s", broadcast_id, e)
 
 
 if __name__ == "__main__":

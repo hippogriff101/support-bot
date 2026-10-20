@@ -157,15 +157,6 @@ actually came back up.
   helper replies with `?…` (or a macro) and `?claim`/`?unclaim`/`?close` all
   work, and the recipient's replies are surfaced in the support channel so
   the team can follow along. Nothing here becomes a ticket.
-- **Broadcasts** (Home tab → **New broadcast**) send one message to a list
-  of people. Pick recipients, write the message — multi-paragraph, emoji and
-  any Slack formatting, with `{name}`, `{user-at}`, `{user}`, `{date}`,
-  `{event}` and `{helper}` placeholders filled in per recipient — and
-  optionally delay it. Each recipient is tracked individually (sent /
-  pending / failed) and sends are staggered by `BROADCAST_GAP_SECONDS`
-  (default 1.2s ≈ 50/minute, under `chat.postMessage`'s rate limit) so a
-  few hundred people don't trip it. Only helpers with the "can broadcast"
-  flag (admins always) see the button.
 - **Unanswered tickets**: a ticket is "waiting" while it's open and the
   user's latest message hasn't had a `?` reply since. `/support unanswered`
   and the Home tab list them longest-waiting first, with links.
@@ -179,12 +170,11 @@ actually came back up.
 - The bot's **Home tab** (click its name/icon in Slack): anyone who isn't
   a helper just sees a "DM me for help" notice. Helpers see Open/Resolved
   counts, the unanswered queue, a per-helper reply-count leaderboard, and
-  anything they've scheduled (queued `?@user` messages, and past broadcasts
-  if they can broadcast). Admins get the **admin dashboard** on top of that:
+  anything they've scheduled (queued `?@user` messages). Admins get the
+  **admin dashboard** on top of that:
   each helper's resolved count, org-wide numbers, **Settings** (support
-  channel, event name, nudge timing/name/icon, broadcast spacing), and
-  add/edit/remove for **helpers** (each with a "can broadcast" toggle) and
-  **macros**.
+  channel, event name, nudge timing/name/icon), and
+  add/edit/remove for **helpers** and **macros**.
 
 ### Commands
 
@@ -228,15 +218,14 @@ python refresh_tickets.py --apply   # update the messages
 It only touches each message's buttons/status line (never its text) and is
 safe to re-run.
 
-New tables (`outbox`, `scheduled_dms`, `broadcasts`, `broadcast_targets`,
-`dm_setups`) are created by `init_db()` on startup, so the upgrade needs no
-manual migration.
+New tables (`outbox`, `scheduled_dms`, `dm_setups`) are created by `init_db()`
+on startup, so the upgrade needs no manual migration.
 
 ## Development
 
 ```bash
 python -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-./.venv/bin/pytest -q          # 64 tests
+./.venv/bin/pytest -q          # 66 tests
 ./.venv/bin/ruff check .       # lint
 ./.venv/bin/ruff format .      # format
 ```
@@ -246,7 +235,8 @@ The tests import `app.py`, which builds the Slack client at import time, so
 network or real workspace needed. `tests/test_new_features.py` covers the
 pure logic (delay parsing, placeholder rendering, block building, DB
 round-trips); `tests/test_flows.py` drives the real handlers with a fake
-client (file prompts, `?@user` scheduling, broadcast fan-out).
+client (file prompts, `?@user` scheduling). `tests/test_no_regressions.py`
+pins the behaviour upstream already had.
 
 ## Notes
 
