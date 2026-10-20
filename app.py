@@ -558,13 +558,12 @@ def _handle_support_reply(event, client) -> None:
     user_id = event["user"]
     files = attachments.relayable(event.get("files"))
     thread_ts = event.get("thread_ts")
-    ticket = db.get_ticket_by_support_ts(thread_ts) if thread_ts else None
 
     if not text.startswith("?"):
         # Internal chatter, not meant for the user — but a helper dropping a
         # file in might well mean it for them, so offer (just to them) to send
         # it on. Outside a ticket thread there's nobody to send it to.
-        if files and helpers.is_helper(user_id) and ticket is not None:
+        if files and thread_ts and helpers.is_helper(user_id) and db.get_ticket_by_support_ts(thread_ts):
             db.add_outbox(thread_ts, ts, user_id, attachments.summary(files))
             client.chat_postEphemeral(
                 channel=channel,
@@ -581,8 +580,9 @@ def _handle_support_reply(event, client) -> None:
             )
         return
 
+    ticket = db.get_ticket_by_support_ts(thread_ts) if thread_ts else None
     if not helpers.is_helper(user_id):
-        if ticket is None:
+        if not thread_ts:
             return  # ordinary channel chatter that happens to start with `?`
         client.reactions_add(channel=channel, timestamp=ts, name="x")
         client.chat_postEphemeral(
@@ -601,19 +601,33 @@ def _handle_support_reply(event, client) -> None:
     target = _mention_target(reply_text)
     if target and (ticket is not None or not thread_ts):
         _start_dm_setup(client, ticket, thread_ts or ts, user_id, target)
+        if files:
+            # The modal only carries text, so say so rather than lose them.
+            client.chat_postEphemeral(
+                channel=channel,
+                thread_ts=thread_ts or ts,
+                user=user_id,
+                text=f"Your {len(files)} attachment(s) weren't sent — `?@user` only carries the message you "
+                "write next. Once the DM's ticket is open, send them there with `?`.",
+            )
         return
 
     if ticket is None:
-        if not thread_ts:
-            # A top-level `?close`/`?reply` has no user to go to — say so
-            # rather than leave the helper thinking it was sent.
+        # Nothing to relay to. In a thread (e.g. under a `?@user` prompt) a `?`
+        # is surely meant for someone, so always say it didn't go; top-level,
+        # only when it was clearly aimed at the bot — `?? is the bot down` is
+        # just a question to the channel.
+        command = reply_text.lower()
+        if thread_ts or files or command in ("close", "claim", "unclaim") or macros.get_macro(reply_text):
+            where = "This thread isn't a ticket" if thread_ts else "That's not in a ticket's thread"
             client.chat_postEphemeral(
                 channel=channel,
+                thread_ts=thread_ts,
                 user=user_id,
-                text="That only works inside a ticket's thread — on its own in the channel, "
-                "only `?@user` does anything.",
+                text=f"{where}, so it wasn't sent to anyone — reply with `?…` in the ticket's own thread. "
+                "On its own in the channel, only `?@user` does anything.",
             )
-        return  # reply in a thread we don't recognise as a ticket
+        return
 
     command = reply_text.lower()
 
@@ -738,9 +752,13 @@ def handle_dm_setup_continue(ack, body, client):
     payload = json.loads(body["actions"][0]["value"])
     if not helpers.is_helper(body["user"]["id"]) or not _dm_setup_guard(client, body, payload):
         return
+    # Where the prompt is, so the submit can swap its buttons for a link to
+    # the new ticket — otherwise Continue stays live and a second click opens
+    # a second ticket.
+    context = {**payload, "prompt_channel": body["channel"]["id"], "prompt_ts": body["message"]["ts"]}
     client.views_open(
         trigger_id=body["trigger_id"],
-        view=home.dm_setup_modal(payload["target"], payload),
+        view=home.dm_setup_modal(payload["target"], context),
     )
 
 
@@ -818,7 +836,7 @@ def handle_dm_setup_submit(ack, body, client, view):
     # The ticket this was started from, if any — a `?@user` posted as its own
     # channel message has none, and the new ticket above stands alone.
     # Modals opened before `ticket_ts` existed carried the ticket as `thread_ts`.
-    origin_ts = metadata["ticket_ts"] if "ticket_ts" in metadata else metadata.get("thread_ts")
+    origin_ts = metadata.get("ticket_ts", metadata.get("thread_ts"))
     origin = db.get_ticket_by_support_ts(origin_ts) if origin_ts else None
     if origin is not None:
         _log(
@@ -827,6 +845,31 @@ def handle_dm_setup_submit(ack, body, client, view):
             f"<@{caller_id}> started a DM thread with <@{target}> (message #{scheduled_id}, {when}) — "
             f"it has its own ticket in this channel. First message sends at {send_at} UTC.",
         )
+    if metadata.get("prompt_ts"):
+        done = (
+            f"<@{caller_id}> set up a DM with <@{target}> (first message {when}). "
+            f"Reply with `?…` in {_ticket_link(client, posted['ts'])}, not here."
+        )
+        try:
+            client.chat_update(
+                channel=metadata["prompt_channel"],
+                ts=metadata["prompt_ts"],
+                text=done,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": done}}],
+            )
+        except Exception as e:
+            logging.warning("Couldn't close off the DM setup prompt %s: %s", metadata["prompt_ts"], e)
+
+
+def _ticket_link(client, support_ts: str) -> str:
+    """`<permalink|its ticket>` for a ticket's message, or plain words if
+    Slack won't give us a link."""
+    try:
+        url = client.chat_getPermalink(channel=config.support_channel_id(), message_ts=support_ts)["permalink"]
+        return f"<{url}|its ticket>"
+    except Exception as e:
+        logging.debug("Couldn't get a permalink for %s: %s", support_ts, e)
+        return "its ticket in this channel"
 
 
 def _thread_message(client, channel: str, thread_ts: str, msg_ts: str) -> dict | None:

@@ -69,6 +69,9 @@ class FakeClient:
         self.calls.append(("reactions_remove", kwargs))
         return {"ok": True}
 
+    def chat_getPermalink(self, channel=None, message_ts=None, **kwargs):
+        return {"permalink": f"https://slack.test/{channel}/{message_ts}"}
+
     def files_upload_v2(self, **kwargs):
         self.calls.append(("files_upload_v2", kwargs))
         return {"ok": True}
@@ -636,3 +639,46 @@ def test_self_target_top_level_doesnt_crash(client, support_env):
 def test_mention_in_a_non_ticket_thread_is_ignored(client, support_env):
     app.handle_message(_channel_message("?<@U0TARGET>", thread_ts="150.1"), client)
     assert client.first_post("setting up a message thread") is None
+
+
+# --- final-check fixes ----------------------------------------------------------
+
+
+def test_helper_question_in_a_non_ticket_thread_is_told_it_wasnt_sent(client, support_env):
+    """e.g. `?bring your laptop` typed under a top-level `?@user` prompt."""
+    app.handle_message(_channel_message("?bring your laptop", thread_ts="200.1", ts="210.1"), client)
+    note = client.calls_named("chat_postEphemeral")[0]
+    assert "wasn't sent" in note["text"] and note["thread_ts"] == "200.1"
+    assert client.calls_named("chat_postMessage") == []
+
+
+def test_non_helper_in_a_non_ticket_thread_is_still_told(client, support_env):
+    app.handle_message(_channel_message("?can I help", user="U0RANDOM", thread_ts="150.1", ts="210.1"), client)
+    assert client.calls_named("reactions_add")[0]["name"] == "x"
+
+
+@pytest.mark.parametrize("text", ["?? is the bot down", "?", "?anyone around"])
+def test_top_level_chatter_gets_no_hint(client, support_env, text):
+    app.handle_message(_channel_message(text), client)
+    assert client.calls == []
+
+
+def test_submit_closes_off_the_prompt(client, support_env):
+    app.handle_message(_channel_message("?<@U0TARGET>"), client)
+    metadata = _metadata_via_continue(client, client.first_post("setting up a message thread"))
+    app.handle_dm_setup_submit(
+        ack=_noop_ack, body={"user": {"id": "U0HELPER"}}, client=client, view=_submit_view(metadata)
+    )
+    ticket_ts = db.list_scheduled_dms("U0HELPER")[0]["support_ts"]
+    closed = [u for u in client.calls_named("chat_update") if u["ts"] == "900.1"]
+    assert len(closed) == 1
+    assert f"https://slack.test/C_support/{ticket_ts}" in closed[0]["text"]
+    assert all(b["type"] != "actions" for b in closed[0]["blocks"])  # no Continue left to click
+
+
+def test_mention_with_files_says_they_werent_sent(client, support_env):
+    files = [{"id": "F1", "name": "a.png", "url_private_download": "https://f/a.png", "mode": "hosted"}]
+    app.handle_message(_channel_message("?<@U0TARGET>", files=files), client)
+    assert client.first_post("setting up a message thread") is not None
+    note = client.calls_named("chat_postEphemeral")[0]
+    assert "weren't sent" in note["text"]
