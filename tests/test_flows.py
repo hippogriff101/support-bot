@@ -131,6 +131,7 @@ def test_helper_file_prompt_then_confirm(client, support_env):
     assert db.get_outbox("100.1", "200.1")["files"][0]["name"] == "shot.png"
 
     # Confirm -> files relayed into the user's DM.
+    client.messages[("C_support", "100.1")] = [{"ts": "200.1", "files": files}]
     body = {
         "actions": [{"value": prompts[0]["blocks"][-1]["elements"][0]["value"]}],
         "channel": {"id": "C_support"},
@@ -262,3 +263,169 @@ def test_attachments_summary_is_button_safe():
     ]
     value = {"thread_ts": "t", "msg_ts": "m", "asker": "U0ONE", "files": attachments.summary(files)}
     assert len(json.dumps(value)) < 2000
+
+
+# --- review fixes --------------------------------------------------------------
+
+
+def _submit_dm_setup(client, delay="now", target="U0TARGET", caller="U0HELPER"):
+    view = {
+        "private_metadata": json.dumps({"thread_ts": "100.1", "target": target}),
+        "state": {
+            "values": {
+                "target": {"value": {"selected_user": target}},
+                "message": {"value": {"value": "Hi {name}"}},
+                "delay": {"value": {"value": delay}},
+            }
+        },
+    }
+    captured = {}
+    app.handle_dm_setup_submit(
+        ack=lambda **k: captured.update(k), body={"user": {"id": caller}}, client=client, view=view
+    )
+    return captured
+
+
+def test_dm_setup_opens_a_ticket_both_sides_can_use(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    assert "errors" not in _submit_dm_setup(client)
+    row = db.list_scheduled_dms("U0HELPER")[0]
+    ticket = db.get_ticket_by_support_ts(row["support_ts"])
+    assert ticket["user_id"] == "U0TARGET" and ticket["dm_channel"] == "D-U0TARGET"
+    assert ticket["dm_ts"] == row["thread_ts"]
+    assert ticket["claimed_by"] == "U0HELPER"
+
+    # The first message lands in the intro's thread.
+    app.send_due_scheduled_dms(client)
+    first = client.first_post("Hi name-U0TARGET")
+    assert first["channel"] == "D-U0TARGET" and first["thread_ts"] == ticket["dm_ts"]
+
+    # The recipient's reply in that thread relays like any ticket follow-up…
+    app._handle_dm(
+        {"channel": "D-U0TARGET", "ts": "5000.1", "thread_ts": ticket["dm_ts"], "user": "U0TARGET", "text": "thanks"},
+        client,
+    )
+    assert db.get_user_message("D-U0TARGET", "5000.1") is not None
+
+    # …and a helper's `?` in the new ticket's thread reaches them.
+    app._handle_support_reply(
+        {"channel": "C_support", "thread_ts": ticket["support_ts"], "ts": "6000.1", "user": "U0HELPER", "text": "?np"},
+        client,
+    )
+    reply = next(p for p in client.calls_named("chat_postMessage") if p["text"].startswith("np\n"))
+    assert reply["channel"] == "D-U0TARGET" and reply["thread_ts"] == ticket["dm_ts"]
+
+
+def test_dm_setup_rejects_self(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    captured = _submit_dm_setup(client, target="U0HELPER")
+    assert captured.get("response_action") == "errors" and "target" in captured["errors"]
+
+
+def test_failed_scheduled_dm_tells_the_helper(support_env):
+    class FailingDM(FakeClient):
+        def chat_postMessage(self, **kwargs):
+            if kwargs.get("channel", "").startswith("D-") and "username" in kwargs:
+                raise RuntimeError("not_in_channel")
+            return super().chat_postMessage(**kwargs)
+
+    client = FailingDM()
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    _submit_dm_setup(client)
+    app.send_due_scheduled_dms(client)
+    note = client.first_post("couldn't be sent")
+    assert note is not None and note["channel"] == "C_support"
+
+
+def test_dm_setup_cancel_is_owner_only(client, support_env):
+    helpers.add_helper("U0OTHER", "Support")
+    body = {
+        "actions": [{"value": json.dumps({"target": "U0TARGET", "helper_id": "U0HELPER"})}],
+        "channel": {"id": "C_support"},
+        "message": {"ts": "900.1"},
+        "user": {"id": "U0OTHER"},
+    }
+    app.handle_dm_setup_cancel(ack=_noop_ack, body=body, client=client)
+    assert client.calls_named("chat_update") == []
+    assert client.calls_named("chat_postEphemeral")
+
+
+def test_helpers_own_ticket_question_mark_goes_to_support(client, support_env):
+    db.create_ticket("100.1", "D_helper", "d1", "U0HELPER", "help", support_text="x")
+    app._handle_dm(
+        {"channel": "D_helper", "ts": "300.1", "thread_ts": "d1", "user": "U0HELPER", "text": "?is this a bug"}, client
+    )
+    assert db.get_user_message("D_helper", "300.1") is not None
+    assert db.get_ticket_by_support_ts("100.1")["status"] == "open"
+
+
+def test_edit_of_placeholder_reply_keeps_it_filled(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    app._handle_support_reply(
+        {"channel": "C_support", "thread_ts": "100.1", "ts": "200.1", "user": "U0HELPER", "text": "?Hi {name} typo"},
+        client,
+    )
+    assert db.get_reply_by_support_ts("200.1")["text"] == "Hi name-U0USER typo"
+
+    app._mirror_helper_change(client, "200.1", "?Hi {name} typo", "?Hi {name} fixed", False, sent_at="x")
+    update = client.calls_named("chat_update")[-1]
+    assert update["text"].startswith("Hi name-U0USER fixed")
+
+
+def test_helper_file_deleted_before_confirm_isnt_sent(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    files = [{"id": "F1", "name": "wrong.png", "url_private_download": "https://files/wrong.png", "mode": "hosted"}]
+    app._handle_support_reply(
+        {"channel": "C_support", "thread_ts": "100.1", "ts": "200.1", "user": "U0HELPER", "text": "", "files": files},
+        client,
+    )
+    client.messages[("C_support", "100.1")] = [{"ts": "200.1", "files": []}]  # file deleted since
+    value = client.calls_named("chat_postEphemeral")[0]["blocks"][-1]["elements"][0]["value"]
+    body = {"actions": [{"value": value}], "channel": {"id": "C_support"}, "user": {"id": "U0HELPER"}}
+    app.handle_confirm_helper_files(ack=_noop_ack, body=body, client=client, respond=lambda **k: None)
+    assert db.get_reply_by_support_ts("200.1") is None
+
+
+def test_helper_file_cancel_clears_stash(client, support_env):
+    db.add_outbox("100.1", "200.1", "U0HELPER", [{"id": "F1", "name": "a.png", "url": "u"}])
+    body = {"actions": [{"value": json.dumps({"thread_ts": "100.1", "msg_ts": "200.1", "asker": "U0HELPER"})}]}
+    app.handle_cancel_helper_files(ack=_noop_ack, body=body, respond=lambda **k: None)
+    assert db.get_outbox("100.1", "200.1") is None
+
+
+def test_old_user_file_prompt_still_cancellable(client, support_env):
+    body = {
+        "actions": [{"value": json.dumps({"thread_ts": "d1", "msg_ts": "300.1"})}],  # no `asker`
+        "channel": {"id": "D_user"},
+        "message": {"ts": "400.1"},
+        "user": {"id": "U0USER"},
+    }
+    app.handle_cancel_user_files(ack=_noop_ack, body=body, client=client)
+    assert "not sent" in client.calls_named("chat_update")[0]["text"]
+
+
+def test_admin_can_unclaim(client, support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    db.set_ticket_claim("100.1", "U0HELPER")
+    body = {"user": {"id": "U0ADMIN"}, "channel": {"id": "C_support"}, "message": {"ts": "100.1"}}
+    app.handle_ticket_unclaim(ack=_noop_ack, body=body, client=client)
+    assert db.get_ticket_by_support_ts("100.1")["claimed_by"] is None
+
+
+def test_helper_modal_submit_saves(client, support_env):
+    view = {
+        "private_metadata": "{}",
+        "state": {
+            "values": {
+                "user": {"value": {"selected_user": "U0NEW"}},
+                "role": {"value": {"value": "Clubs"}},
+                "admin": {"admin": {"selected_options": [{"value": "admin"}]}},
+            }
+        },
+    }
+    captured = {}
+    app.handle_helper_submit(
+        ack=lambda **k: captured.update(k), body={"user": {"id": "U0ADMIN"}}, client=client, view=view
+    )
+    assert "errors" not in captured
+    assert helpers.get_role("U0NEW") == "Clubs" and helpers.is_admin("U0NEW")

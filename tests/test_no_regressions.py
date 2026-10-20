@@ -18,6 +18,12 @@ import db
 import helpers
 
 
+def _ticket_button_ids(ticket) -> list[str]:
+    """The action_ids a ticket's message would show."""
+    blocks = app._ticket_blocks("x", ticket)
+    return [e["action_id"] for b in blocks if b["type"] == "actions" for e in b["elements"]]
+
+
 @pytest.fixture
 def support_env(isolated_state, monkeypatch):
     monkeypatch.setenv("SUPPORT_CHANNEL_ID", "C_support")
@@ -104,10 +110,10 @@ def stub_profiles(monkeypatch):
 def test_upstream_action_ids_still_present():
     """Upstream used exactly these three; a message posted before the upgrade
     still carries them, so they must still be handled."""
-    ids = app._ticket_button_ids({"status": "open", "claimed_by": None, "resolved_by": None})
+    ids = _ticket_button_ids({"status": "open", "claimed_by": None, "resolved_by": None})
     assert "ticket_claim" in ids
     assert "ticket_resolve" in ids
-    assert "ticket_reopen" in app._ticket_button_ids({"status": "closed", "claimed_by": None, "resolved_by": "U1"})
+    assert "ticket_reopen" in _ticket_button_ids({"status": "closed", "claimed_by": None, "resolved_by": "U1"})
 
 
 def test_upstream_claim_resolve_reopen_semantics_unchanged():

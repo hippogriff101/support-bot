@@ -122,7 +122,7 @@ def build_home_view(user_id: str) -> dict:
 
     is_admin = helpers.is_admin(user_id)
     blocks = _helper_blocks(is_admin, user_id)
-    blocks += _scheduled_blocks(user_id, is_admin)
+    blocks += _scheduled_blocks(user_id)
     if is_admin:
         blocks += _admin_blocks()
     return {"type": "home", "blocks": blocks}
@@ -190,7 +190,7 @@ def _helper_blocks(is_admin: bool, user_id: str = "") -> list:
     return blocks
 
 
-def _scheduled_blocks(user_id: str, is_admin: bool) -> list:
+def _scheduled_blocks(user_id: str) -> list:
     """Queued `?@user` messages, so a helper can see what they've set up."""
     blocks = []
 

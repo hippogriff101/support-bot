@@ -148,15 +148,18 @@ actually came back up.
   anyone else from replying (see [Notes](#notes)). Purely for stats/context.
   `?unclaim` lets it go again.
 - **`?@user` starts a DM with someone** — inside the thread it offers to set
-  one up. `?<@U123>`, `? <@U123>` and a bare Slack ID all work; the offer
+  one up. `?<@U123>`, `? <@U123>` and `?@U123` all work (the `@` is
+  required, so a reply like `?WAIT` is never mistaken for an ID); the offer
   prompt names both people (`@you is setting up a message thread with
   @them. Continue?`) so a mistyped ID is obvious before anything is sent.
   Continuing opens a modal for the first message and an optional delay (up
-  to 48 hours), then the DM opens with a "… will send you a message here
-  <when>" line. Once the thread is open it behaves like any other: the
-  helper replies with `?…` (or a macro) and `?claim`/`?unclaim`/`?close` all
-  work, and the recipient's replies are surfaced in the support channel so
-  the team can follow along. Nothing here becomes a ticket.
+  to 48 hours). The DM opens with a "… will send you a message here <when>"
+  line, and the conversation gets **its own ticket** in the support channel,
+  claimed by the helper who started it. From there it's an ordinary ticket:
+  the first message (and every later `?…` reply in the new ticket's thread)
+  lands in the DM thread, the recipient's replies there relay back, and
+  `?claim`/`?unclaim`/`?close` all work. If the scheduled message can't be
+  sent, the helper is pinged in that ticket's thread.
 - **Unanswered tickets**: a ticket is "waiting" while it's open and the
   user's latest message hasn't had a `?` reply since. `/support unanswered`
   and the Home tab list them longest-waiting first, with links.
@@ -218,14 +221,14 @@ python refresh_tickets.py --apply   # update the messages
 It only touches each message's buttons/status line (never its text) and is
 safe to re-run.
 
-New tables (`outbox`, `scheduled_dms`, `dm_setups`) are created by `init_db()`
+New tables (`outbox`, `scheduled_dms`) are created by `init_db()`
 on startup, so the upgrade needs no manual migration.
 
 ## Development
 
 ```bash
 python -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-./.venv/bin/pytest -q          # 66 tests
+./.venv/bin/pytest -q          # 85 tests
 ./.venv/bin/ruff check .       # lint
 ./.venv/bin/ruff format .      # format
 ```

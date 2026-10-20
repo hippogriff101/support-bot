@@ -173,7 +173,7 @@ def test_render_placeholders(isolated_state):
     out = scheduling.render(body, user_id="U9", name="Sam", helper_id="U2")
     assert "Hi Sam!" in out
     assert "<@U9>" in out
-    assert "Sam (@U9)" in out
+    assert "@Sam" in out
     assert "Bento" in out
     assert "<@U2>" in out
     # Multi-paragraph, emoji and Slack formatting survive untouched.
@@ -184,6 +184,19 @@ def test_render_leaves_unknown_placeholders_alone(isolated_state):
     assert scheduling.render("{nope} and {name}", user_id="", name="") == "{nope} and there"
 
 
+def test_render_leaves_code_alone(isolated_state):
+    body = 'Hi {name}, try `f"{name}"` or:\n```\nprint({date})\n```'
+    out = scheduling.render(body, user_id="U9", name="Sam")
+    assert out.startswith("Hi Sam,")
+    assert '`f"{name}"`' in out
+    assert "print({date})" in out
+
+
+@pytest.mark.parametrize("text", ["1h30", "2 days and a bit", "3d 4"])
+def test_parse_when_rejects_leftovers(text):
+    assert scheduling.parse_when(text)[1] is not None
+
+
 # --- 4b. `?@user` target parsing --------------------------------------------
 
 
@@ -192,7 +205,6 @@ def test_render_leaves_unknown_placeholders_alone(isolated_state):
     [
         ("<@U123ABC>", "U123ABC"),
         ("<@U123ABC|sam>", "U123ABC"),
-        ("U123ABC", "U123ABC"),
         ("@U123ABC", "U123ABC"),
         ("<@U123ABC> ", "U123ABC"),
     ],
@@ -201,7 +213,7 @@ def test_mention_target_parses(text, target):
     assert app._mention_target(text) == target
 
 
-@pytest.mark.parametrize("text", ["hello", "sam", "", "W123ABC x"])
+@pytest.mark.parametrize("text", ["hello", "sam", "", "W123ABC x", "U123ABC", "WAIT", "UPDATE", "WELCOME"])
 def test_mention_target_rejects_non_mentions(text):
     assert app._mention_target(text) is None
 

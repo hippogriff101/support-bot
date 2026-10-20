@@ -35,6 +35,9 @@ PLACEHOLDERS = {
 
 # `{name}` / `{user-at}`. Anything else (including `{{`) is left alone.
 _PLACEHOLDER_RE = re.compile(r"\{([a-z][a-z0-9-]*)\}")
+# Code blocks and inline code, which are rendered as-is — a snippet with
+# `f"{name}"` in it must reach the user exactly as the helper wrote it.
+_CODE_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 
 
 def _now() -> datetime:
@@ -124,8 +127,8 @@ def _parse_delay(text: str) -> float | None:
     if lowered.replace(".", "", 1).isdigit():  # a bare number means hours
         return float(lowered) * 3600
     matches = _PART_RE.findall(lowered)
-    if not matches:
-        return None
+    if not matches or _PART_RE.sub("", lowered).strip(" ,"):
+        return None  # nothing readable, or something left over ("1h30") we'd be guessing at
     seconds = 0.0
     for amount, unit in matches:
         if unit not in _UNITS:
@@ -163,7 +166,7 @@ def render(body: str, *, user_id: str = "", name: str = "", helper_id: str = "")
 
     values = {
         "user-at": f"<@{user_id}>" if user_id else "",
-        "user": f"{name} (@{user_id})" if user_id else "",
+        "user": f"@{name}" if name else "",
         "name": name or "there",
         "date": _now().strftime("%Y-%m-%d"),
         "event": config.event_name(),
@@ -176,4 +179,10 @@ def render(body: str, *, user_id: str = "", name: str = "", helper_id: str = "")
             return match.group(0)
         return values[match.group(1)]
 
-    return _PLACEHOLDER_RE.sub(replace, body)
+    parts, last = [], 0
+    for code in _CODE_RE.finditer(body):
+        parts.append(_PLACEHOLDER_RE.sub(replace, body[last : code.start()]))
+        parts.append(code.group(0))
+        last = code.end()
+    parts.append(_PLACEHOLDER_RE.sub(replace, body[last:]))
+    return "".join(parts)
