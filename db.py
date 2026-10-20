@@ -167,6 +167,22 @@ def init_db(path: str = DB_PATH) -> None:
         )
         conn.commit()
 
+        # DMs a helper opened with `?@user`, so later replies in that DM know
+        # who they're talking to (the recipient isn't in the tickets table) and
+        # which ticket thread to log against.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dm_setups (
+                dm_channel TEXT PRIMARY KEY,
+                recipient_id TEXT NOT NULL,
+                helper_id TEXT NOT NULL,
+                support_ts TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+
         # Admin broadcasts: one row per (broadcast, recipient), so each
         # recipient's send time and delivery can be tracked on its own.
         conn.execute(
@@ -509,6 +525,28 @@ def clear_outbox(thread_ts: str, msg_ts: str, path: str = DB_PATH) -> None:
 
 
 # --- Scheduled helper messages (the ?@user flow) ----------------------------
+
+
+def remember_dm_setup(
+    dm_channel: str, recipient_id: str, helper_id: str, support_ts: str = "", path: str = DB_PATH
+) -> None:
+    """Note that the bot opened `dm_channel` so `helper_id` could message
+    `recipient_id`, so replies in that DM can be routed, signed, and logged
+    against the ticket thread the setup started from."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            "INSERT INTO dm_setups (dm_channel, recipient_id, helper_id, support_ts) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(dm_channel) DO UPDATE SET recipient_id = excluded.recipient_id, "
+            "helper_id = excluded.helper_id, support_ts = excluded.support_ts",
+            (dm_channel, recipient_id, helper_id, support_ts),
+        )
+        conn.commit()
+
+
+def get_dm_setup(dm_channel: str, path: str = DB_PATH):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT * FROM dm_setups WHERE dm_channel = ?", (dm_channel,)).fetchone()
 
 
 def create_scheduled_dm(

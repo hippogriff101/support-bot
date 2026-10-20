@@ -11,7 +11,6 @@ covers the calls the code makes, and the pure logic (delay parsing, placeholder
 rendering, block building, DB round-trips) is tested directly.
 """
 
-import importlib
 import json
 import sqlite3
 from contextlib import closing
@@ -25,24 +24,7 @@ import config
 import db
 import helpers
 import home
-import macros
 import scheduling
-
-
-@pytest.fixture
-def isolated_state(tmp_path, monkeypatch):
-    """Point every store at tmp_path — see tests/test_features.py for why db
-    has to be reloaded rather than patched."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "tickets.db"))
-    importlib.reload(db)
-    db.init_db()
-    monkeypatch.setattr(helpers, "HELPERS_PATH", str(tmp_path / "helpers.json"))
-    monkeypatch.setattr(macros, "MACROS_PATH", str(tmp_path / "macros.json"))
-    macros.bootstrap_defaults()
-    yield
-    monkeypatch.delenv("DB_PATH")
-    importlib.reload(db)
-
 
 # --- 1. ticket buttons follow state -----------------------------------------
 
@@ -53,20 +35,18 @@ def test_ticket_blocks_reflect_state():
     claimed = {"status": "open", "claimed_by": "U_a", "resolved_by": None}
     closed = {"status": "closed", "claimed_by": "U_a", "resolved_by": "U_a"}
 
-    def ids(ticket, viewer=None):
-        blocks = app._ticket_blocks("hi", ticket, viewer)
+    def ids(ticket):
+        blocks = app._ticket_blocks("hi", ticket)
         return [e["action_id"] for b in blocks if b["type"] == "actions" for e in b["elements"]]
 
     assert ids(open_ticket) == ["ticket_claim", "ticket_resolve"]
-    # Whoever claimed it can let it go; anyone else just sees who's on it.
-    assert ids(claimed, viewer="U_a") == ["ticket_unclaim", "ticket_resolve"]
-    assert ids(claimed, viewer="U_b") == ["ticket_claim", "ticket_resolve"]
+    assert ids(claimed) == ["ticket_unclaim", "ticket_resolve"]
     assert ids(closed) == ["ticket_reopen"]
 
 
 def test_ticket_blocks_show_claim_context_line():
     claimed = {"status": "open", "claimed_by": "U_a", "resolved_by": None}
-    blocks = app._ticket_blocks("hi", claimed, viewer="U_b")
+    blocks = app._ticket_blocks("hi", claimed)
     context = next(b for b in blocks if b["type"] == "context")
     assert "Claimed by <@U_a>" in context["elements"][0]["text"]
 
@@ -74,7 +54,7 @@ def test_ticket_blocks_show_claim_context_line():
 def test_ticket_blocks_truncate_long_text():
     """Slack rejects a section over 3000 chars, and the full text is still in
     the message's fallback `text`."""
-    blocks = app._ticket_blocks("x" * 5000, None, None)
+    blocks = app._ticket_blocks("x" * 5000, None)
     assert len(blocks[0]["text"]["text"]) <= 3000
     assert blocks[0]["text"]["text"].endswith("…")
 

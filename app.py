@@ -120,16 +120,18 @@ def _button(text: str, action_id: str, style: str | None = None) -> dict:
     return button
 
 
-def _ticket_blocks(text: str, ticket=None, viewer: str | None = None) -> list:
+def _ticket_blocks(text: str, ticket=None) -> list:
     """The forwarded ticket message plus buttons for whatever can happen to
     it next, so helpers don't have to type `?claim`/`?close`:
-      open, unclaimed   -> Claim + Resolve
-      open, claimed by me -> Unclaim + Resolve
-      open, claimed     -> "Claimed by" line + Resolve
-      resolved          -> "Resolved by" line + Reopen
-    `ticket=None` is a brand-new (open, unclaimed) ticket. `viewer` is the
-    helper looking at it: whoever claimed a ticket gets Unclaim, everyone
-    else just sees who's on it."""
+      open, unclaimed -> Claim + Resolve
+      open, claimed   -> "Claimed by" line + Unclaim + Resolve
+      resolved        -> "Resolved by" line + Reopen
+    `ticket=None` is a brand-new (open, unclaimed) ticket.
+
+    A channel message's buttons are shared by everyone who can see it, so the
+    state they show is the ticket's, not the viewer's — the handlers do the
+    per-person gating (an ephemeral "X already has this one" for anyone but
+    the claimer)."""
     if len(text) > 3000:  # section text limit — the full text stays in the message's `text`
         text = text[:2990] + "…"
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
@@ -141,10 +143,7 @@ def _ticket_blocks(text: str, ticket=None, viewer: str | None = None) -> list:
         state, buttons = f":ms-green-tick: Resolved{by}", [_button("Reopen", "ticket_reopen")]
     elif claimed_by:
         state = f":raising_hand: Claimed by <@{claimed_by}>"
-        if viewer and viewer == claimed_by:
-            buttons = [_button("Unclaim", "ticket_unclaim"), _button("Resolve", "ticket_resolve", "primary")]
-        else:
-            buttons = [_button("Claim", "ticket_claim"), _button("Resolve", "ticket_resolve", "primary")]
+        buttons = [_button("Unclaim", "ticket_unclaim"), _button("Resolve", "ticket_resolve", "primary")]
     else:
         state, buttons = None, [_button("Claim", "ticket_claim"), _button("Resolve", "ticket_resolve", "primary")]
 
@@ -155,13 +154,13 @@ def _ticket_blocks(text: str, ticket=None, viewer: str | None = None) -> list:
 
 
 def _ticket_button_ids(ticket) -> list[str]:
-    """The action_ids a ticket's message would show — used to check whether a
-    viewer's copy is already up to date before re-rendering it."""
-    blocks = _ticket_blocks("x", ticket, viewer=None)
+    """The action_ids a ticket's message would show — used to check whether it
+    needs re-rendering before an update."""
+    blocks = _ticket_blocks("x", ticket)
     return [e["action_id"] for b in blocks if b["type"] == "actions" for e in b["elements"]]
 
 
-def refresh_ticket_message(client, support_ts: str, viewer: str | None = None) -> None:
+def refresh_ticket_message(client, support_ts: str) -> None:
     """Re-render a ticket's forwarded message so its buttons match its
     current state. Tickets from before support_text was stored get their
     text read back from Slack once."""
@@ -177,7 +176,7 @@ def refresh_ticket_message(client, support_ts: str, viewer: str | None = None) -
             parent = client.conversations_replies(channel=channel, ts=support_ts, limit=1)["messages"][0]
             text = parent.get("text", "")
             db.set_ticket_text(support_ts, text)
-        client.chat_update(channel=channel, ts=support_ts, text=text, blocks=_ticket_blocks(text, ticket, viewer))
+        client.chat_update(channel=channel, ts=support_ts, text=text, blocks=_ticket_blocks(text, ticket))
     except Exception as e:
         logging.warning("Couldn't refresh ticket message %s: %s", support_ts, e)
 
@@ -232,7 +231,7 @@ def _close_ticket(client, ticket, resolved_by: str) -> None:
             pass  # reaction may already exist
         db.set_ticket_status(ticket["support_ts"], "closed", resolved_by=resolved_by)
         _support_note(client, ticket, "This message has been resolved!")
-        refresh_ticket_message(client, ticket["support_ts"], viewer=resolved_by)
+        refresh_ticket_message(client, ticket["support_ts"])
         update_stats(client)
 
 
@@ -242,13 +241,13 @@ def _claim_ticket(client, ticket, user_id: str) -> None:
     messages the user."""
     db.set_ticket_claim(ticket["support_ts"], user_id)
     _support_note(client, ticket, f"Claimed by <@{user_id}>.")
-    refresh_ticket_message(client, ticket["support_ts"], viewer=user_id)
+    refresh_ticket_message(client, ticket["support_ts"])
 
 
 def _unclaim_ticket(client, ticket, user_id: str) -> None:
     db.clear_ticket_claim(ticket["support_ts"])
     _support_note(client, ticket, f"Unclaimed by <@{user_id}> — up for grabs.")
-    refresh_ticket_message(client, ticket["support_ts"], viewer=user_id)
+    refresh_ticket_message(client, ticket["support_ts"])
 
 
 def _reopen_ticket(client, ticket, by: str | None = None) -> None:
@@ -264,7 +263,7 @@ def _reopen_ticket(client, ticket, by: str | None = None) -> None:
             pass  # reaction may already be gone
         db.set_ticket_status(ticket["support_ts"], "open")
         _support_note(client, ticket, f"Reopened by <@{by}>." if by else "This message has been opened again.")
-        refresh_ticket_message(client, ticket["support_ts"], viewer=by)
+        refresh_ticket_message(client, ticket["support_ts"])
         update_stats(client)
 
 
@@ -468,52 +467,66 @@ def _send_helper_reply(
     reply_text: str,
     files: list,
     *,
+    channel: str | None = None,
     thread_ts: str | None = None,
-    placeholder_target: str | None = None,
+    recipient_id: str | None = None,
 ) -> None:
-    """Relay a helper's reply (text and/or files) into the user's DM thread,
-    signed with their role.
+    """Relay a helper's reply (text and/or files) into a user's DM, signed with
+    the helper's role.
 
-    `thread_ts` overrides where it lands — used for the `?@user` setup, where
-    the reply belongs in a second DM's thread rather than the ticket's own.
-    `placeholder_target` is who `{name}`/`{user-at}` resolve to; it defaults
-    to the recipient in `ticket`.
+    `channel`/`thread_ts` override where it lands — used by the `?@user` flow,
+    where the reply belongs in a second DM rather than the ticket's own.
+    `recipient_id` is who `{name}`/`{user-at}` resolve to; it defaults to the
+    ticket's user.
     """
     _reopen_ticket(client, ticket)
+    destination = channel or ticket["dm_channel"]
     target = thread_ts or ticket["dm_ts"]
+    recipient = recipient_id or ticket["user_id"]
     if reply_text:
-        reply_text = scheduling.render(reply_text, user_id=user_id, name=real_name(user_id), helper_id=user_id)
+        reply_text = scheduling.render(reply_text, user_id=recipient, name=real_name(recipient), helper_id=user_id)
     body = reply_text or f"_Sent you {len(files)} attachment(s) — below._"
     sent = client.chat_postMessage(
-        channel=ticket["dm_channel"],
+        channel=destination,
         thread_ts=target,
         text=f"{body}\n\n_— <@{user_id}>, {signature_role(user_id)}_",
         username=real_name(user_id),
         icon_url=avatar_url(user_id),
     )
-    db.create_reply(support_msg_ts, ticket["id"], ticket["dm_channel"], sent["ts"], user_id, body)
+    db.create_reply(support_msg_ts, ticket["id"], destination, sent["ts"], user_id, body)
     db.touch_helper_activity(ticket["support_ts"])
-    _copy_files(client, ticket, files, ticket["dm_channel"], target, "to the user")
-    client.reactions_add(channel=config.support_channel_id(), timestamp=support_msg_ts, name="white_check_mark")
+    _copy_files(client, ticket, files, destination, target, "to the user")
+    if config.support_channel_id():
+        client.reactions_add(channel=config.support_channel_id(), timestamp=support_msg_ts, name="white_check_mark")
+
+
+def _setup_ticket(setup):
+    """The ticket a `?@user` setup was started from, so its notes and counters
+    stay in one place even though the DM is a different conversation."""
+    return db.get_ticket_by_support_ts(setup["support_ts"]) if setup["support_ts"] else None
 
 
 def _handle_thread_dm(client, channel: str, thread_ts: str, user_id: str, text: str, ts: str, files: list) -> None:
-    """A message in a DM thread that isn't a ticket: an ordinary thread the
-    person started, or one the bot opened so a helper could reach somebody who
-    never opened a ticket.
+    """A message in a DM thread that isn't a ticket: an ordinary thread between
+    the person and the bot, or one the bot opened for a helper's `?@user` flow.
 
-    For the bot-opened case the person's replies are for the helper, so they're
-    logged in the support channel — but they're *not* turned into a ticket.
+    In the bot-opened case a helper replies with `?…` (which `_handle_dm` routes
+    to `_handle_helper_dm_thread`) and the recipient's own replies are surfaced
+    in the support channel so the helpers can follow along — but nothing here
+    becomes a ticket.
     """
-    if not helpers.is_helper(user_id):
-        return  # an ordinary DM thread between the person and the bot; nothing to do
+    setup = db.get_dm_setup(channel)
+    if setup is None:
+        return  # an ordinary DM thread between the person and the bot
     if thread_ts == ts:
         return  # the message that started the thread — already handled on post
+    if helpers.is_helper(user_id):
+        return  # that's a helper's own note; `_handle_dm` handled the `?` case
+    # The recipient replying to a helper.
+    note = f"<@{user_id}> replied in the DM thread <@{setup['helper_id']}> started: {text.strip() or '(no text)'}"
     if files:
-        _support_note_raw(
-            client,
-            "Someone sent files in a DM thread the bot opened; they're in the DM, not here.",
-        )
+        note += f" (+{len(files)} file(s), in the DM)"
+    _support_note_raw(client, note)
 
 
 def _support_note_raw(client, text: str) -> None:
@@ -531,7 +544,7 @@ def _handle_helper_dm_thread(client, ticket, channel, thread_ts, user_id, text, 
     command = text.lstrip()[1:].strip()
     lowered = command.lower()
 
-    if helpers.is_helper(user_id) and lowered in ("claim", "unclaim", "close"):
+    if lowered in ("claim", "unclaim", "close"):
         if lowered == "claim":
             _claim_ticket(client, ticket, user_id)
         elif lowered == "unclaim":
@@ -541,9 +554,10 @@ def _handle_helper_dm_thread(client, ticket, channel, thread_ts, user_id, text, 
         client.reactions_add(channel=channel, timestamp=ts, name="white_check_mark")
         return
 
-    if not helpers.is_helper(user_id):
-        client.chat_postEphemeral(channel=channel, user=user_id, text="Only helpers can send a `?` message to a user.")
-        return
+    # In a `?@user` DM the recipient is whoever the bot opened it with, not the
+    # ticket's original user.
+    setup = db.get_dm_setup(channel)
+    recipient_id = setup["recipient_id"] if setup else ticket["user_id"]
 
     target = _mention_target(command)
     if target:
@@ -559,11 +573,13 @@ def _handle_helper_dm_thread(client, ticket, channel, thread_ts, user_id, text, 
     _send_helper_reply(
         client,
         ticket,
-        ticket["user_id"],
+        user_id,
         ts,
         reply_text,
         files_to_send,
+        channel=channel,
         thread_ts=thread_ts,
+        recipient_id=recipient_id,
     )
 
 
@@ -584,8 +600,15 @@ def _handle_dm(event, client) -> None:
         ticket = db.get_ticket_by_dm(channel, thread_ts)
         if ticket is None:
             # Not a ticket thread: either an ordinary DM thread someone
-            # started, or one the bot opened for a helper's `?@user` flow —
-            # where helpers reply normally, `?` or not.
+            # started, or one the bot opened for a helper's `?@user` flow.
+            setup = db.get_dm_setup(channel)
+            setup_ticket = _setup_ticket(setup) if setup is not None else None
+            if setup_ticket is not None and helpers.is_helper(user_id) and text.lstrip().startswith("?"):
+                # A helper replying in a DM they set up. There's no ticket for
+                # this channel, so the setup records the ticket thread the flow
+                # started from — that's where the notes and counters live.
+                _handle_helper_dm_thread(client, setup_ticket, channel, thread_ts, user_id, text, ts, files)
+                return
             _handle_thread_dm(client, channel, thread_ts, user_id, text, ts, files)
             return
         if helpers.is_helper(user_id) and text.lstrip().startswith("?"):
@@ -853,6 +876,7 @@ def handle_dm_setup_submit(ack, body, client, view):
         return
 
     scheduled_id = db.create_scheduled_dm(dm_channel, target, caller_id, message, send_at)
+    db.remember_dm_setup(dm_channel, target, caller_id, metadata["thread_ts"])
     ack()
     client.chat_postMessage(
         channel=dm_channel,
@@ -1246,9 +1270,7 @@ def handle_ticket_reopen(ack, body, client):
     if ticket is None:
         return
     if ticket["status"] == "open":
-        refresh_ticket_message(
-            client, ticket["support_ts"], viewer=body["user"]["id"]
-        )  # stale buttons — someone already reopened it
+        refresh_ticket_message(client, ticket["support_ts"])  # stale buttons — someone already reopened it
         return
     _reopen_ticket(client, ticket, by=body["user"]["id"])
 
