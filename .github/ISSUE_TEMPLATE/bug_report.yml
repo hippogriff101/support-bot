@@ -1,0 +1,39 @@
+name: Bug report
+description: Something isn't working the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Security problems:** please use the Security tab → "Report a vulnerability" instead of a public issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. DM the bot "…"
+        2. Click "Yes, send it"
+        3. Reply in the ticket thread with "?…"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From the bot's logs. **Remove any tokens** (xoxb-…, xapp-…) first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit you're running, or "latest main".
+  - type: dropdown
+    id: hosting
+    attributes:
+      label: Where is it hosted?
+      options: [Orchard, Docker, VPS / systemd, Fly.io, Railway, Render, Locally, Other]

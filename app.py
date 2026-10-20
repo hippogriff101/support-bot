@@ -5,6 +5,7 @@ import re
 import secrets
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dotenv import load_dotenv
 from slack_bolt import App
@@ -13,6 +14,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 import attachments
 import config
 import db
+import guides
 import helpers
 import home
 import macros
@@ -22,7 +24,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 STATS_SETTING = "anchored_stats_ts"
-RESOLVED_EMOJI = "ms-green-tick"
 NUDGE_CHECK_SECONDS = 10 * 60
 # How often to look for scheduled `?@user` DMs that are due. A minute is fine:
 # nothing here is more time-critical than "sometime around then".
@@ -140,7 +141,7 @@ def _ticket_blocks(text: str, ticket=None) -> list:
     claimed_by = ticket["claimed_by"] if ticket else None
     if status == "closed":
         by = f" by <@{ticket['resolved_by']}>" if ticket["resolved_by"] else ""
-        state, buttons = f":ms-green-tick: Resolved{by}", [_button("Reopen", "ticket_reopen")]
+        state, buttons = f":{config.resolved_emoji()}: Resolved{by}", [_button("Reopen", "ticket_reopen")]
     elif claimed_by:
         state = f":raising_hand: Claimed by <@{claimed_by}>"
         buttons = [_button("Unclaim", "ticket_unclaim"), _button("Resolve", "ticket_resolve", "primary")]
@@ -218,7 +219,7 @@ def _close_ticket(client, ticket, resolved_by: str) -> None:
     if ticket["status"] == "open":
         try:
             client.reactions_add(
-                channel=config.support_channel_id(), timestamp=ticket["support_ts"], name=RESOLVED_EMOJI
+                channel=config.support_channel_id(), timestamp=ticket["support_ts"], name=config.resolved_emoji()
             )
         except Exception:
             pass  # reaction may already exist
@@ -250,7 +251,7 @@ def _reopen_ticket(client, ticket, by: str | None = None) -> None:
     if ticket["status"] == "closed":
         try:
             client.reactions_remove(
-                channel=config.support_channel_id(), timestamp=ticket["support_ts"], name=RESOLVED_EMOJI
+                channel=config.support_channel_id(), timestamp=ticket["support_ts"], name=config.resolved_emoji()
             )
         except Exception:
             pass  # reaction may already be gone
@@ -1398,6 +1399,7 @@ def handle_delete_reply_shortcut(ack, shortcut, client):
 
 
 HELP_TEXT = """*Support bot commands*
+• `/support guide` — the helper training (`/support guide admin` for the admin handbook)
 • `/support whoami` — your own role
 • `/support list` — the helper roster _(helpers)_
 • `/support unanswered` — open tickets still waiting on a reply _(helpers)_
@@ -1413,6 +1415,7 @@ HELP_TEXT = """*Support bot commands*
 • `?macro-name` — send a macro's canned reply
 • `?claim` / `?unclaim` — mark yourself as handling it, or let it go
 • `?close` — resolve it without messaging the user
+• `?@someone` — message someone who hasn't DMed me (works on its own in the channel too)
 • Edit or delete a `?` reply and the user's copy follows — logged in the thread
 
 Admins can also manage everything from the bot's *Home* tab."""
@@ -1525,6 +1528,16 @@ def handle_support_command(ack, respond, command, client):
         respond(f"Macro `?{macro_name}` saved.")
         return
 
+    if subcommand == "guide":
+        if not helpers.is_helper(caller_id):
+            respond(guides.HOW_TO_GET_HELP)
+            return
+        kind = "admin" if len(parts) > 1 and parts[1].lower() == "admin" and helpers.is_admin(caller_id) else "helper"
+        client.views_open(
+            trigger_id=command["trigger_id"], view=home.guide_modal(kind, trained=db.is_trained(caller_id))
+        )
+        return
+
     if subcommand == "config":
         if not helpers.is_admin(caller_id):
             respond("Only admins can change the bot's settings.")
@@ -1592,6 +1605,43 @@ def _admin_action(client, body) -> bool:
         return True
     publish_home(client, user_id)
     return False
+
+
+@app.action("open_guide")
+def handle_open_guide(ack, body, client):
+    ack()
+    user_id = body["user"]["id"]
+    if not helpers.is_helper(user_id):
+        publish_home(client, user_id)  # a stale view from before they were removed
+        return
+    kind = body["actions"][0].get("value") or "helper"
+    if kind == "admin" and not helpers.is_admin(user_id):
+        kind = "helper"
+    client.views_open(trigger_id=body["trigger_id"], view=home.guide_modal(kind, trained=db.is_trained(user_id)))
+
+
+@app.action("guide_page")
+def handle_guide_page(ack, body, client):
+    ack()
+    kind, page = body["actions"][0]["value"].split(":", 1)
+    if kind not in guides.GUIDES:
+        return
+    client.views_update(
+        view_id=body["view"]["id"],
+        hash=body["view"]["hash"],
+        view=home.guide_modal(kind, int(page), trained=db.is_trained(body["user"]["id"])),
+    )
+
+
+@app.action("guide_finish")
+def handle_guide_finish(ack, body, client):
+    ack()
+    user_id = body["user"]["id"]
+    if not helpers.is_helper(user_id):
+        return
+    db.mark_trained(user_id)
+    client.views_update(view_id=body["view"]["id"], view=home.guide_done_modal())
+    publish_home(client, user_id)
 
 
 @app.action("open_setup")
@@ -1808,7 +1858,30 @@ def handle_delete_macro_submit(ack, body, client, view):
         publish_home(client, caller_id)
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass  # health checks every few seconds would drown the real logs
+
+
+def start_health_server(port: int) -> None:
+    """Answer HTTP health checks on `port`, for hosts that expect every
+    process to listen on one (Orchard, Render, Railway…). Socket Mode itself
+    needs no inbound traffic, so this is only switched on when PORT is set."""
+    server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    logging.info("Health check listening on :%d", port)
+
+
 if __name__ == "__main__":
+    if os.environ.get("PORT"):
+        start_health_server(int(os.environ["PORT"]))
+
     if not helpers.all_helpers():
         setup_code()
 

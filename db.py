@@ -36,6 +36,7 @@ support channel can edit or delete the corresponding DM message later:
 import json
 import os
 import sqlite3
+import time
 from contextlib import closing
 
 DB_PATH = os.environ.get("DB_PATH", "tickets.db")
@@ -450,6 +451,37 @@ def set_setting(key: str, value: str, path: str = DB_PATH) -> None:
             (key, value),
         )
         conn.commit()
+
+
+def mark_trained(user_id: str, path: str = DB_PATH) -> None:
+    """Record that a helper finished the Home tab's helper training. Kept in
+    settings rather than helpers.json, which is rewritten on every roster
+    edit."""
+    set_setting(f"trained:{user_id}", time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), path=path)
+
+
+def is_trained(user_id: str, path: str = DB_PATH) -> bool:
+    return get_setting(f"trained:{user_id}", path=path) is not None
+
+
+def list_claimed_open(user_id: str, limit: int = 10, path: str = DB_PATH) -> list:
+    """Open tickets `user_id` has claimed, longest-waiting first."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT * FROM tickets WHERE status = 'open' AND claimed_by = ? "
+            "ORDER BY COALESCE(last_user_at, created_at) ASC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+
+
+def list_user_tickets(user_id: str, limit: int = 5, path: str = DB_PATH) -> list:
+    """Tickets someone opened (or was messaged about), newest first."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT * FROM tickets WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?", (user_id, limit)
+        ).fetchall()
 
 
 # --- "Do you want to send this file?" prompts -------------------------------

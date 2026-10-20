@@ -54,6 +54,10 @@ class FakeClient:
         self.calls.append(("views_open", kwargs))
         return {"ok": True}
 
+    def views_update(self, **kwargs):
+        self.calls.append(("views_update", kwargs))
+        return {"ok": True}
+
     def views_publish(self, **kwargs):
         self.calls.append(("views_publish", kwargs))
         return {"ok": True}
@@ -682,3 +686,101 @@ def test_mention_with_files_says_they_werent_sent(client, support_env):
     assert client.first_post("setting up a message thread") is not None
     note = client.calls_named("chat_postEphemeral")[0]
     assert "weren't sent" in note["text"]
+
+
+# --- guides, training and the Home tab -------------------------------------------
+
+import urllib.request  # noqa: E402
+
+import guides  # noqa: E402
+import home  # noqa: E402
+
+
+@pytest.mark.parametrize("kind", ["helper", "admin"])
+def test_guide_pages_fit_slack_limits(isolated_state, kind):
+    for page in range(len(guides.GUIDES[kind])):
+        modal = home.guide_modal(kind, page)
+        assert len(modal["title"]["text"]) <= 24
+        assert all(len(b["text"]["text"]) <= 3000 for b in modal["blocks"] if b["type"] == "section")
+
+
+def _nav(modal):
+    return [e["action_id"] for b in modal["blocks"] if b["type"] == "actions" for e in b["elements"]]
+
+
+def test_guide_navigation_and_finish(client, support_env):
+    last = len(guides.HELPER_GUIDE) - 1
+    assert _nav(home.guide_modal("helper", 0)) == ["guide_page"]
+    assert _nav(home.guide_modal("helper", last)) == ["guide_page", "guide_finish"]
+    assert _nav(home.guide_modal("helper", last, trained=True)) == ["guide_page"]  # nothing left to finish
+
+    body = {"user": {"id": "U0HELPER"}, "actions": [{"value": "helper:2"}], "view": {"id": "V1", "hash": "h"}}
+    app.handle_guide_page(ack=_noop_ack, body=body, client=client)
+    assert "Page 3 of" in json.dumps(client.calls_named("views_update")[0]["view"])
+
+    assert "Start training" in json.dumps(home.build_home_view("U0HELPER"))
+    app.handle_guide_finish(ack=_noop_ack, body=body, client=client)
+    assert db.is_trained("U0HELPER")
+    assert "Start training" not in json.dumps(home.build_home_view("U0HELPER"))
+
+
+def test_non_helper_cant_finish_training(client, support_env):
+    body = {"user": {"id": "U0RANDOM"}, "actions": [{"value": "helper"}], "view": {"id": "V1", "hash": "h"}}
+    app.handle_guide_finish(ack=_noop_ack, body=body, client=client)
+    assert not db.is_trained("U0RANDOM")
+
+
+def test_admin_guide_falls_back_to_helper_guide_for_helpers(client, support_env):
+    body = {"user": {"id": "U0HELPER"}, "actions": [{"value": "admin"}], "trigger_id": "t"}
+    app.handle_open_guide(ack=_noop_ack, body=body, client=client)
+    assert client.calls_named("views_open")[0]["view"]["title"]["text"] == guides.TITLES["helper"]
+
+
+def test_setup_checklist_shows_until_done(support_env):
+    assert "Setup checklist" in json.dumps(home.build_home_view("U0ADMIN"))
+    config.save("event_name", "Bento")
+    for uid in helpers.all_helpers():
+        db.mark_trained(uid)
+    assert "Setup checklist" not in json.dumps(home.build_home_view("U0ADMIN"))
+
+
+def test_requester_sees_their_own_requests(support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "my laptop is on fire", support_text="x")
+    db.create_ticket("101.1", "D_other", "d2", "U0OTHER", "someone else's", support_text="x")
+    view = json.dumps(home.build_home_view("U0USER"))
+    assert "my laptop is on fire" in view and "someone else" not in view
+    assert "waiting for a helper" in view
+
+
+def test_helper_sees_their_claims(support_env):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "claimed one", support_text="x")
+    db.set_ticket_claim("100.1", "U0HELPER")
+    assert "claimed one" in json.dumps(home.build_home_view("U0HELPER"))
+
+
+def test_resolved_emoji_is_configurable(client, support_env):
+    config.save("resolved_emoji", ":ms-green-tick:")
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    app._close_ticket(client, db.get_ticket_by_support_ts("100.1"), resolved_by="U0HELPER")
+    assert client.calls_named("reactions_add")[0]["name"] == "ms-green-tick"
+
+
+def test_support_guide_command(client, support_env):
+    responses = []
+    command = {"user_id": "U0ADMIN", "text": "guide admin", "trigger_id": "t"}
+    app.handle_support_command(ack=_noop_ack, respond=responses.append, command=command, client=client)
+    assert client.calls_named("views_open")[0]["view"]["title"]["text"] == guides.TITLES["admin"]
+    command = {"user_id": "U0RANDOM", "text": "guide", "trigger_id": "t"}
+    app.handle_support_command(ack=_noop_ack, respond=responses.append, command=command, client=client)
+    assert responses == [guides.HOW_TO_GET_HELP]
+
+
+def test_health_server_answers():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app.start_health_server(port)
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+        assert resp.status == 200 and resp.read() == b"ok"

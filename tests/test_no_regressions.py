@@ -107,7 +107,7 @@ def stub_profiles(monkeypatch):
 # --- feature 1: the action_ids upstream already put on live messages ---------
 
 
-def test_upstream_action_ids_still_present():
+def test_upstream_action_ids_still_present(isolated_state):
     """Upstream used exactly these three; a message posted before the upgrade
     still carries them, so they must still be handled."""
     ids = _ticket_button_ids({"status": "open", "claimed_by": None, "resolved_by": None})
@@ -116,7 +116,7 @@ def test_upstream_action_ids_still_present():
     assert "ticket_reopen" in _ticket_button_ids({"status": "closed", "claimed_by": None, "resolved_by": "U1"})
 
 
-def test_upstream_claim_resolve_reopen_semantics_unchanged():
+def test_upstream_claim_resolve_reopen_semantics_unchanged(isolated_state):
     """The states upstream distinguished still resolve the same way."""
     open_ = app._ticket_blocks("t", {"status": "open", "claimed_by": None, "resolved_by": None})
     claimed = app._ticket_blocks("t", {"status": "open", "claimed_by": "U_a", "resolved_by": None})

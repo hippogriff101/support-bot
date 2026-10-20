@@ -6,10 +6,12 @@ Pure functions of the current DB/roster/config state — no Slack client calls
 The Home tab has four faces:
   - first-run setup (nobody's on the roster yet): a button to claim admin
     with the one-time setup code from the bot's logs
-  - everyone else who isn't a helper: a "DM me for help" notice
-  - helpers: ticket stats, the unanswered queue, and the reply leaderboard
-  - admins: all of that plus org-wide numbers, settings, and roster/macro
-    management
+  - everyone else who isn't a helper: how to get help, and their own
+    requests so far
+  - helpers: ticket stats, the unanswered queue, their own claimed tickets,
+    the reply leaderboard, and the helper training (see guides.py)
+  - admins: all of that plus a setup checklist, org-wide numbers, settings,
+    and roster/macro management
 """
 
 import json
@@ -17,6 +19,7 @@ from datetime import datetime, timezone
 
 import config
 import db
+import guides
 import helpers
 import macros
 import scheduling
@@ -110,22 +113,46 @@ def build_home_view(user_id: str) -> dict:
     if not helpers.all_helpers():
         return {"type": "home", "blocks": _setup_blocks()}
     if not helpers.is_helper(user_id):
-        return {
-            "type": "home",
-            "blocks": [
-                _section(
-                    f":wave: *{config.event_name()} Support*\nDM me here if you need help — "
-                    "I'll check whether you want it sent to the support team."
-                )
-            ],
-        }
+        return {"type": "home", "blocks": _requester_blocks(user_id) + [_footer()]}
 
     is_admin = helpers.is_admin(user_id)
     blocks = _helper_blocks(is_admin, user_id)
     blocks += _scheduled_blocks(user_id)
     if is_admin:
         blocks += _admin_blocks()
+    blocks.append(_footer())
     return {"type": "home", "blocks": blocks}
+
+
+def _footer() -> dict:
+    stamp = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    return {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": f"Updated {stamp} · `/support help` lists every command"}],
+    }
+
+
+def _requester_blocks(user_id: str) -> list:
+    """For anyone who isn't a helper: how to ask for help, and how their own
+    requests are getting on (linked back to their DM threads)."""
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"{config.event_name()} Support"}},
+        _section(guides.HOW_TO_GET_HELP),
+    ]
+    mine = db.list_user_tickets(user_id)
+    if mine:
+        lines = []
+        for t in mine:
+            if t["status"] == "closed":
+                state = ":white_check_mark: resolved"
+            elif t["claimed_by"]:
+                state = ":raising_hand: a helper's on it"
+            else:
+                state = ":hourglass_flowing_sand: waiting for a helper"
+            link = f"<{permalink(t['dm_channel'], t['dm_ts'])}|{_snippet(t['original_text'], 50)}>"
+            lines.append(f"• {link} — {state} · {ago(t['created_at'])} ago")
+        blocks += [{"type": "divider"}, _section("*Your requests*\n" + "\n".join(lines))]
+    return blocks
 
 
 def _setup_blocks() -> list:
@@ -144,9 +171,13 @@ def _helper_blocks(is_admin: bool, user_id: str = "") -> list:
     open_count = db.count_tickets_by_status("open")
     closed_count = db.count_tickets_by_status("closed")
 
-    toolbar = [_button(":arrows_counterclockwise: Refresh", "home_refresh")]
+    toolbar = [
+        _button(":arrows_counterclockwise: Refresh", "home_refresh"),
+        _button(":books: Helper guide", "open_guide", value="helper"),
+    ]
     if is_admin:
         toolbar += [
+            _button(":hammer_and_wrench: Admin guide", "open_guide", value="admin"),
             _button(":gear: Settings", "open_config"),
             _button(":bust_in_silhouette: Add helper", "open_add_helper"),
             _button(":memo: Add macro", "open_add_macro"),
@@ -156,6 +187,16 @@ def _helper_blocks(is_admin: bool, user_id: str = "") -> list:
         {"type": "header", "text": {"type": "plain_text", "text": f"{config.event_name()} Support"}},
         {"type": "actions", "elements": toolbar},
     ]
+    if not db.is_trained(user_id):
+        blocks.append(
+            _section(
+                ":wave: *New here?* Take the two-minute helper training — replying, files, fixing mistakes "
+                "and good habits.",
+                accessory=_button("Start training", "open_guide", value="helper", style="primary"),
+            )
+        )
+    if is_admin:
+        blocks += _setup_checklist()
     if not config.support_channel_id():
         blocks.append(
             _section(
@@ -164,6 +205,7 @@ def _helper_blocks(is_admin: bool, user_id: str = "") -> list:
             )
         )
     blocks.append(_section(stats_text(open_count, closed_count)))
+    blocks += _my_tickets_blocks(user_id)
 
     blocks.append({"type": "divider"})
     total_unanswered = db.count_unanswered()
@@ -188,6 +230,44 @@ def _helper_blocks(is_admin: bool, user_id: str = "") -> list:
         rows.append(line)
     blocks.append(_section("*Support agents*\n" + "\n".join(rows)))
     return blocks
+
+
+def _my_tickets_blocks(user_id: str) -> list:
+    """The helper's own open claims, and how much they've done so far."""
+    channel = config.support_channel_id()
+    replies = db.count_replies_by_helper().get(user_id, 0)
+    resolved = db.count_resolved_by_helper().get(user_id, 0)
+    text = f":bust_in_silhouette: *You* — *{replies}* replies sent, *{resolved}* tickets resolved"
+    claimed = db.list_claimed_open(user_id, limit=MAX_UNANSWERED)
+    if claimed:
+        text += "\n*Claimed by you and still open:*\n" + "\n".join(
+            f"• <{permalink(channel, t['support_ts'])}|{_snippet(t['original_text'])}> from <@{t['user_id']}> "
+            f"— {ago(t['last_user_at'] or t['created_at'])} since they last wrote"
+            for t in claimed
+        )
+    return [{"type": "divider"}, _section(text)]
+
+
+def _setup_checklist() -> list:
+    """What's left of first-time setup, for admins. Disappears once it's all
+    done, so it only takes space while it's useful."""
+    roster = helpers.all_helpers()
+    trained = sum(db.is_trained(uid) for uid in roster)
+    items = [
+        (bool(config.support_channel_id()), "Pick the support channel in *Settings* (`/invite` me to it first)"),
+        (config.event_name() != config.SETTINGS["event_name"][1], "Set your event name in *Settings*"),
+        (len(roster) > 1, "Add your helpers"),
+        (trained == len(roster), f"Helpers take the training on their Home tab ({trained}/{len(roster)} done)"),
+    ]
+    if all(done for done, _ in items):
+        return []
+    lines = [f"{':white_check_mark:' if done else ':white_large_square:'} {text}" for done, text in items]
+    return [
+        _section(
+            ":clipboard: *Setup checklist*\n" + "\n".join(lines),
+            accessory=_button("How to", "open_guide", value="admin"),
+        )
+    ]
 
 
 def _scheduled_blocks(user_id: str) -> list:
@@ -237,6 +317,7 @@ def _admin_blocks() -> list:
     )
     for uid, info in roster[:MAX_ROWS]:
         badge = " · *admin*" if info.get("admin") else ""
+        badge += " · :books: trained" if db.is_trained(uid) else " · _not trained yet_"
         blocks.append(
             _section(
                 f"<@{uid}> — {_escape(info.get('role', config.default_role()))}{badge}",
@@ -434,3 +515,51 @@ def dm_setup_modal(target_id: str, context: dict | None = None) -> dict:
         submit="Send",
         metadata={**(context or {}), "target": target_id},
     )
+
+
+# --- Guides (helper training, admin handbook) --------------------------------
+
+
+def guide_modal(kind: str, page: int = 0, trained: bool = False) -> dict:
+    """One page of a guide from guides.py, with Back/Next buttons that swap
+    the page in place. The helper training's last page has *Finish
+    training*, which is what marks a helper as trained."""
+    pages = guides.GUIDES[kind]
+    page = max(0, min(page, len(pages) - 1))
+    title, body = pages[page]
+    nav = []
+    if page > 0:
+        nav.append(_button("← Back", "guide_page", value=f"{kind}:{page - 1}"))
+    if page < len(pages) - 1:
+        nav.append(_button("Next →", "guide_page", value=f"{kind}:{page + 1}", style="primary"))
+    elif kind == "helper" and not trained:
+        nav.append(_button("Finish training", "guide_finish", value=kind, style="primary"))
+    blocks = [
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Page {page + 1} of {len(pages)}"}]},
+        _section(f"*{title}*\n\n{body}"),
+    ]
+    if nav:
+        blocks.append({"type": "actions", "elements": nav})
+    return {
+        "type": "modal",
+        "callback_id": "guide",
+        "private_metadata": json.dumps({"kind": kind, "page": page}),
+        "title": {"type": "plain_text", "text": guides.TITLES[kind]},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": blocks,
+    }
+
+
+def guide_done_modal() -> dict:
+    return {
+        "type": "modal",
+        "callback_id": "guide",
+        "title": {"type": "plain_text", "text": guides.TITLES["helper"]},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [
+            _section(
+                ":tada: *You're all set!*\n\nHead to the support channel and pick up a ticket from *Waiting on a "
+                "reply*. The guide stays on your Home tab if you need it again."
+            )
+        ],
+    }
