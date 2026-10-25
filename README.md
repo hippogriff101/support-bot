@@ -1,5 +1,8 @@
 # Support Bot
 
+> [!NOTE]  
+> This project was almost entierly coded by a varity of differant coding agents, such as Claude Code and Open Code, but has been tried and tested by real people.
+
 A Slack help desk that lives in DMs. People message the bot, confirm, and
 their question lands in a private support channel as a **ticket**. Helpers
 reply in the ticket's thread with a `?` prefix, and the bot relays it back,
