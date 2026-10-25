@@ -129,8 +129,10 @@ Everything the bot does, in detail. For a quick overview see the
 
 ### Message shortcuts
 
-On a helper's own `?`-reply message: **Edit reply** and **Delete reply**,
-usable by the original sender or an admin. Editing only changes the text —
+On a helper's own `?`-reply message: **Edit reply** and **Delete reply**.
+Only the original sender can edit a reply — nobody, admins included, can
+change someone else's words. Deleting is open to the sender or an admin.
+Editing only changes the text —
 Slack doesn't support changing a message's displayed name/photo after it's
 posted, so an edited reply keeps showing whoever sent the original. Both
 are logged in the thread, same as editing/deleting the message directly.
