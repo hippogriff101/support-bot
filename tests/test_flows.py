@@ -560,6 +560,68 @@ def test_admin_can_unclaim(client, support_env):
     assert db.get_ticket_by_support_ts("100.1")["claimed_by"] is None
 
 
+def _sent_reply(client):
+    db.create_ticket("100.1", "D_user", "d1", "U0USER", "help", support_text="x")
+    app._handle_support_reply(
+        {"channel": "C_support", "thread_ts": "100.1", "ts": "200.1", "user": "U0HELPER", "text": "?hello"}, client
+    )
+    client.calls.clear()
+
+
+def _reply_shortcut(caller):
+    return {
+        "channel": {"id": "C_support"},
+        "message": {"ts": "200.1", "thread_ts": "100.1"},
+        "user": {"id": caller},
+        "trigger_id": "t1",
+    }
+
+
+def _edit_submit(caller):
+    view = {
+        "private_metadata": json.dumps({"support_reply_ts": "200.1"}),
+        "state": {"values": {"text_block": {"text_input": {"value": "words they never said"}}}},
+    }
+    return {"ack": _noop_ack, "body": {"user": {"id": caller}}, "view": view}
+
+
+@pytest.mark.parametrize("caller", ["U0ADMIN", "U0OTHER"])
+def test_nobody_but_the_sender_can_edit_a_reply(client, support_env, caller):
+    helpers.add_helper("U0OTHER", "Support")
+    _sent_reply(client)
+    app.handle_edit_reply_shortcut(ack=_noop_ack, shortcut=_reply_shortcut(caller), client=client)
+    assert client.calls_named("views_open") == []
+    assert "Only the sender" in client.calls_named("chat_postEphemeral")[0]["text"]
+
+    # Even a modal opened some other way can't save over someone else's reply.
+    app.handle_edit_reply_submit(client=client, **_edit_submit(caller))
+    assert client.calls_named("chat_update") == []
+    assert db.get_reply_by_support_ts("200.1")["text"] == "hello"
+
+
+def test_sender_can_still_edit_their_reply(client, support_env):
+    _sent_reply(client)
+    app.handle_edit_reply_shortcut(ack=_noop_ack, shortcut=_reply_shortcut("U0HELPER"), client=client)
+    assert client.calls_named("views_open")
+    app.handle_edit_reply_submit(client=client, **_edit_submit("U0HELPER"))
+    assert db.get_reply_by_support_ts("200.1")["text"] == "words they never said"
+
+
+def test_admin_can_delete_someone_elses_reply(client, support_env):
+    _sent_reply(client)
+    app.handle_delete_reply_shortcut(ack=_noop_ack, shortcut=_reply_shortcut("U0ADMIN"), client=client)
+    assert db.get_reply_by_support_ts("200.1")["deleted"]
+    assert client.calls_named("chat_delete")
+
+
+def test_helper_cant_delete_someone_elses_reply(client, support_env):
+    helpers.add_helper("U0OTHER", "Support")
+    _sent_reply(client)
+    app.handle_delete_reply_shortcut(ack=_noop_ack, shortcut=_reply_shortcut("U0OTHER"), client=client)
+    assert not db.get_reply_by_support_ts("200.1")["deleted"]
+    assert client.calls_named("chat_delete") == []
+
+
 def test_helper_modal_submit_saves(client, support_env):
     view = {
         "private_metadata": "{}",

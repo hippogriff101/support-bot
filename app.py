@@ -1263,7 +1263,12 @@ def handle_ticket_reopen(ack, body, client):
     _reopen_ticket(client, ticket, by=body["user"]["id"])
 
 
-def _can_manage_reply(user_id: str, reply) -> bool:
+def _can_edit_reply(user_id: str, reply) -> bool:
+    """Nobody — admins included — may put words in someone else's mouth."""
+    return user_id == reply["author_id"]
+
+
+def _can_delete_reply(user_id: str, reply) -> bool:
     return helpers.is_admin(user_id) or user_id == reply["author_id"]
 
 
@@ -1289,12 +1294,12 @@ def handle_edit_reply_shortcut(ack, shortcut, client):
             channel=channel_id, thread_ts=thread_ts, user=caller_id, text="That reply was already deleted."
         )
         return
-    if not _can_manage_reply(caller_id, reply):
+    if not _can_edit_reply(caller_id, reply):
         client.chat_postEphemeral(
             channel=channel_id,
             thread_ts=thread_ts,
             user=caller_id,
-            text="Only the sender or an admin can edit this reply.",
+            text="Only the sender can edit this reply.",
         )
         return
 
@@ -1335,7 +1340,7 @@ def handle_edit_reply_submit(ack, body, client, view):
         return  # deleted or vanished between opening the modal and submitting it
 
     caller_id = body["user"]["id"]
-    if not _can_manage_reply(caller_id, reply):
+    if not _can_edit_reply(caller_id, reply):
         return
 
     ticket = db.get_ticket_by_id(reply["ticket_id"])
@@ -1375,7 +1380,7 @@ def handle_delete_reply_shortcut(ack, shortcut, client):
             channel=channel_id, thread_ts=thread_ts, user=caller_id, text="That reply was already deleted."
         )
         return
-    if not _can_manage_reply(caller_id, reply):
+    if not _can_delete_reply(caller_id, reply):
         client.chat_postEphemeral(
             channel=channel_id,
             thread_ts=thread_ts,
